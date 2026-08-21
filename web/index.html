@@ -10,7 +10,7 @@
         window.location.replace("http://127.0.0.1:8765/");
       }
     </script>
-    <link rel="stylesheet" href="/styles.css?v=8">
+    <link rel="stylesheet" href="/styles.css?v=9">
   </head>
   <body>
     <div class="film-grain" aria-hidden="true"></div>
@@ -70,6 +70,46 @@
       </header>
 
       <main class="main-content">
+        <section id="onboarding-view" class="view onboarding-view" hidden aria-labelledby="onboarding-title">
+          <header class="onboarding-heading">
+            <div>
+              <p class="eyebrow">FIRST FIVE FILMS</p>
+              <h1 id="onboarding-title">用 5 部看过的电影，<br>让阿映先认识你的口味。</h1>
+              <p>这不是性格测试。每个判断都会显示电影证据，只用于推荐与电影讨论，也可以随时修正。</p>
+            </div>
+            <div class="onboarding-progress" aria-live="polite">
+              <strong id="onboarding-count">0/5</strong>
+              <span id="onboarding-remaining">还需要 5 部</span>
+            </div>
+          </header>
+
+          <form id="onboarding-search-form" class="onboarding-search" role="search">
+            <label for="onboarding-search-input">找一部你看过的电影</label>
+            <div>
+              <input id="onboarding-search-input" placeholder="中文名、原名或别名">
+              <button class="button button-secondary" type="submit">搜索</button>
+            </div>
+          </form>
+
+          <div class="onboarding-layout">
+            <section aria-labelledby="onboarding-candidate-title">
+              <div class="subsection-heading">
+                <div><p class="eyebrow">候选片单</p><h2 id="onboarding-candidate-title">从熟悉的电影开始</h2></div>
+                <button id="onboarding-reset-search" class="text-button" type="button" hidden>回到多样候选</button>
+              </div>
+              <div id="onboarding-candidates" class="onboarding-grid" aria-live="polite"></div>
+            </section>
+            <aside class="onboarding-selection" aria-labelledby="onboarding-selection-title">
+              <p class="eyebrow">你的 5 部</p>
+              <h2 id="onboarding-selection-title">看过，也留下态度</h2>
+              <p>喜欢、一般、不喜欢都是真实证据；“不喜欢”不会抹掉看过事实。</p>
+              <ol id="onboarding-selected" class="selected-movie-list"></ol>
+              <p id="onboarding-status" class="action-result" role="status" aria-live="polite"></p>
+              <button id="onboarding-complete" class="button button-primary button-full" type="button">还需要选择 5 部电影</button>
+            </aside>
+          </div>
+        </section>
+
         <section id="home-view" class="view home-view">
           <div class="home-intro">
             <p class="eyebrow">今晚，想怎么和电影相处？</p>
@@ -108,6 +148,12 @@
               <p>观后讨论和“这部看过了”会自动进入你的片单，之后不再重复推荐。</p>
             </div>
           </aside>
+
+          <button id="taste-profile-button" class="taste-profile-entry" type="button">
+            <span class="memory-icon" aria-hidden="true">◎</span>
+            <span><strong>阿映目前怎么理解我</strong><small>查看电影证据、修正口味结论</small></span>
+            <span aria-hidden="true">→</span>
+          </button>
         </section>
 
         <section id="chat-view" class="view chat-view" hidden>
@@ -118,6 +164,7 @@
               <h1 id="chat-title">刚看完哪一部？</h1>
             </div>
             <div class="chat-preferences">
+              <button id="reflection-generate-button" class="voice-autoplay-toggle" type="button" hidden>整理这次观后感</button>
               <label id="spoiler-control" class="spoiler-control">
                 <input id="spoilers-allowed" type="checkbox" checked>
                 <span>可以聊剧透</span>
@@ -203,16 +250,40 @@
         <div id="reflection-poster" class="reflection-poster" aria-hidden="true"></div>
         <article class="reflection-paper">
           <p id="reflection-meta" class="reflection-meta"></p>
-          <div id="reflection-note" class="reflection-note"></div>
-          <p id="reflection-empty" class="reflection-empty" hidden>还没有形成笔记。再聊几句你对这部电影的真实感受，阿映会替你整理在这里。</p>
+          <p id="reflection-state" class="reflection-state"></p>
+          <textarea id="reflection-note" class="reflection-note" maxlength="2000" aria-label="观后感正文"></textarea>
+          <p id="reflection-empty" class="reflection-empty" hidden>还没有观后感。继续聊这部电影后，点击“整理这次观后感”生成 AI 草稿。</p>
+          <p class="fine-print">AI 只会生成草稿；你的确认、编辑和锁定版本不会被静默覆盖。</p>
+          <label class="inline-check" for="reflection-auto-generate">
+            <input id="reflection-auto-generate" type="checkbox" checked>
+            <span>离开有效电影讨论时自动生成草稿</span>
+          </label>
         </article>
       </div>
       <div class="reflection-actions">
+        <button id="reflection-save" class="button button-secondary" type="button">保存我的编辑</button>
+        <button id="reflection-confirm" class="button button-secondary" type="button">确认这份草稿</button>
+        <button id="reflection-lock" class="button button-secondary" type="button">锁定</button>
+        <button id="reflection-regenerate" class="button button-secondary" type="button">重新整理</button>
+        <button id="reflection-delete" class="text-button danger-text" type="button">只删除观后感</button>
         <button id="reflection-continue" class="button button-primary" type="button">继续聊这部电影</button>
       </div>
     </dialog>
 
+    <dialog id="taste-dialog" class="taste-dialog" aria-labelledby="taste-title">
+      <form method="dialog" class="dialog-head">
+        <div><span class="eyebrow">YOUR TASTE, WITH EVIDENCE</span><h2 id="taste-title">阿映目前怎么理解我</h2></div>
+        <button class="icon-button" value="cancel" aria-label="关闭口味画像">×</button>
+      </form>
+      <p id="taste-summary" class="taste-summary"></p>
+      <div id="taste-dimensions" class="taste-dimensions"></div>
+      <div class="taste-actions">
+        <button id="taste-recommend" class="button button-primary" type="button">帮我找下一部</button>
+        <button id="taste-discuss" class="button button-secondary" type="button">聊聊这 5 部中的一部</button>
+      </div>
+    </dialog>
+
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/app.js?v=8" defer></script>
+    <script src="/app.js?v=9" defer></script>
   </body>
 </html>

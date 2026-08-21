@@ -34,17 +34,78 @@ function showLogin() {
 
 async function loadDashboard() {
   try {
-    const [invites, config] = await Promise.all([
+    const [invites, config, metrics, pricing] = await Promise.all([
       api("/api/admin/invites"),
       api("/api/admin/agent-config"),
+      api("/api/admin/metrics/summary"),
+      api("/api/admin/usage-pricing"),
     ]);
     $("#invite-rows").replaceChildren(...invites.items.map(inviteRow));
     renderAgentConfig(config);
+    renderMetrics(metrics);
+    renderUsagePricing(pricing);
     showDashboardShell();
   } catch (error) {
     if (error.message.includes("未登录")) showLogin();
     else toast(error.message);
   }
+}
+
+function renderUsagePricing(pricing) {
+  const rates = pricing.rates || {};
+  const modelRate = rates.chat || rates.reflection || rates.taste_profile || {};
+  $("#pricing-version").value = pricing.version || "unpriced-v1";
+  $("#pricing-model-input").value = Number(modelRate.input_per_million || 0);
+  $("#pricing-model-output").value = Number(modelRate.output_per_million || 0);
+  for (const [operation, inputId] of [
+    ["stt", "#pricing-stt-call"], ["tts", "#pricing-tts-call"],
+    ["tmdb", "#pricing-tmdb-call"], ["web_search", "#pricing-search-call"],
+    ["web_reader", "#pricing-reader-call"],
+  ]) {
+    $(inputId).value = Number((rates[operation] || {}).call_cost || 0);
+  }
+}
+
+function renderMetrics(metrics) {
+  const onboarding = metrics.onboarding || {};
+  const recommendations = metrics.recommendations || {};
+  const feedbackCount = Object.values(recommendations.feedback || {}).reduce((sum, value) => sum + Number(value || 0), 0);
+  const reflections = metrics.reflections || {};
+  const cards = [
+    ["账户", metrics.accounts || 0, "当前账户总数"],
+    ["冷启动完成", onboarding.completed || 0, `进行中 ${onboarding.in_progress || 0}`],
+    ["推荐曝光", recommendations.impressions || 0, `已反馈 ${feedbackCount}`],
+    ["观后感草稿", reflections.draft || 0, `确认 ${reflections.confirmed || 0} · 锁定 ${reflections.locked || 0}`],
+  ];
+  $("#metrics-grid").replaceChildren(...cards.map(([label, value, detail]) => {
+    const card = document.createElement("article");
+    card.className = "metric-card";
+    const title = document.createElement("span");
+    title.textContent = label;
+    const number = document.createElement("strong");
+    number.textContent = Number(value).toLocaleString("zh-CN");
+    const copy = document.createElement("small");
+    copy.textContent = detail;
+    card.append(title, number, copy);
+    return card;
+  }));
+  $("#metrics-usage-rows").replaceChildren(...(metrics.usage || []).map((usage) => {
+    const row = document.createElement("tr");
+    for (const value of [
+      usage.operation, usage.calls, usage.failures,
+      `${usage.average_latency_ms || 0} ms`, `¥${Number(usage.estimated_cost || 0).toFixed(6)}`,
+    ]) {
+      const cell = document.createElement("td");
+      cell.textContent = value;
+      row.append(cell);
+    }
+    return row;
+  }));
+}
+
+async function loadMetrics() {
+  const metrics = await api("/api/admin/metrics/summary");
+  renderMetrics(metrics);
 }
 
 async function loadInvites() {
@@ -549,6 +610,53 @@ $("#generate-form").addEventListener("submit", async (event) => {
 $("#copy-codes").addEventListener("click", async () => {
   await navigator.clipboard.writeText($("#codes-output").textContent);
   toast("已复制全部邀请码");
+});
+
+$("#refresh-metrics").addEventListener("click", async (event) => {
+  event.currentTarget.disabled = true;
+  try {
+    await loadMetrics();
+    toast("产品健康汇总已刷新");
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    event.currentTarget.disabled = false;
+  }
+});
+
+$("#usage-pricing-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = event.currentTarget.querySelector("button[type='submit']");
+  button.disabled = true;
+  try {
+    const inputRate = Number($("#pricing-model-input").value || 0);
+    const outputRate = Number($("#pricing-model-output").value || 0);
+    const modelRate = { input_per_million: inputRate, output_per_million: outputRate, call_cost: 0 };
+    const callRate = (selector) => ({ input_per_million: 0, output_per_million: 0, call_cost: Number($(selector).value || 0) });
+    const data = await api("/api/admin/usage-pricing", {
+      method: "POST",
+      body: JSON.stringify({
+        version: $("#pricing-version").value.trim(),
+        rates: {
+          chat: modelRate,
+          reflection: modelRate,
+          taste_profile: modelRate,
+          stt: callRate("#pricing-stt-call"),
+          tts: callRate("#pricing-tts-call"),
+          tmdb: callRate("#pricing-tmdb-call"),
+          web_search: callRate("#pricing-search-call"),
+          web_reader: callRate("#pricing-reader-call"),
+        },
+      }),
+    });
+    renderUsagePricing(data.pricing);
+    await loadMetrics();
+    toast("价格表已保存，后续调用将使用新版本估算");
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    button.disabled = false;
+  }
 });
 
 $("#admin-logout").addEventListener("click", async () => {

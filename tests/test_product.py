@@ -116,6 +116,150 @@ class InviteAndMemoryTests(ProductFixture):
         self.assertIsNone(second)
 
 
+class StageNineProductTests(ProductFixture):
+    def account(self) -> str:
+        code = self.store.generate_invites(1)[0]
+        account_id, _ = self.store.login_with_invite(code, 30)
+        return account_id
+
+    def test_onboarding_requires_exactly_five_and_rejects_sixth(self) -> None:
+        account_id = self.account()
+        movies = self.store.all_movies()[:6]
+        for movie in movies[:4]:
+            self.store.add_onboarding_movie(account_id, movie["id"], "positive")
+        with self.assertRaises(ValueError):
+            self.store.complete_onboarding(account_id)
+        self.store.add_onboarding_movie(account_id, movies[4]["id"], "neutral")
+        with self.assertRaises(ValueError):
+            self.store.add_onboarding_movie(account_id, movies[5]["id"], "negative")
+        profile = self.store.complete_onboarding(account_id)
+        self.assertEqual(profile["onboarding_status"], "completed")
+        self.assertEqual(profile["taste_version"], 1)
+
+    def test_negative_onboarding_feedback_keeps_watched_fact(self) -> None:
+        account_id = self.account()
+        movie = self.store.all_movies()[0]
+        self.store.add_onboarding_movie(account_id, movie["id"], "negative")
+        state = self.store.get_movie_state(account_id, movie["id"])
+        self.assertEqual(state["state"], "watched")
+        self.assertEqual(self.store.onboarding_movies(account_id)[0]["sentiment"], "negative")
+
+    def test_profile_uses_only_current_account_evidence_and_increments_version(self) -> None:
+        first = self.account()
+        second = self.account()
+        movies = self.store.all_movies()[:7]
+        for movie in movies[:5]:
+            self.store.add_onboarding_movie(first, movie["id"], "positive")
+        profile = self.store.complete_onboarding(first)
+        evidence_ids = {
+            evidence["movie_id"]
+            for dimension in profile["taste_dimensions"]
+            for evidence in dimension["evidence"]
+        }
+        self.assertTrue(evidence_ids.issubset({movie["id"] for movie in movies[:5]}))
+        self.assertEqual(self.store.account_profile(second)["taste_version"], 0)
+        self.store.remove_onboarding_movie(first, movies[4]["id"])
+        self.store.add_onboarding_movie(first, movies[5]["id"], "negative")
+        updated = self.store.complete_onboarding(first)
+        self.assertEqual(updated["taste_version"], 2)
+
+    def test_recommendation_feedback_is_scoped_and_action_semantics_are_distinct(self) -> None:
+        first = self.account()
+        second = self.account()
+        recommendation = self.catalog.recommend(first, "想看轻松一点的", 1)[0]
+        impression_id = recommendation["impression_id"]
+        self.assertTrue(impression_id.startswith("rec_"))
+        with self.assertRaises(ValueError):
+            self.store.record_recommendation_feedback(second, impression_id, "not_now")
+        feedback = self.store.record_recommendation_feedback(first, impression_id, "not_now")
+        self.assertEqual(feedback["action"], "not_now")
+        self.assertIsNone(self.store.get_movie_state(first, recommendation["id"]))
+        second_recommendation = self.catalog.recommend(first, "想看轻松一点的", 1)[0]
+        self.store.record_recommendation_feedback(
+            first, second_recommendation["impression_id"], "not_interested"
+        )
+        self.assertEqual(
+            self.store.get_movie_state(first, second_recommendation["id"])["state"],
+            "disliked",
+        )
+
+    def test_reflection_versions_confirm_lock_edit_and_delete_keep_watched(self) -> None:
+        account_id = self.account()
+        movie_id = self.store.all_movies()[0]["id"]
+        self.store.set_movie_state(account_id, movie_id, "watched", "test")
+        draft = self.store.create_reflection_version(
+            account_id, movie_id, "这是一份只围绕电影本身的 AI 草稿。", "ai", "draft"
+        )
+        self.assertEqual(draft["status"], "draft")
+        confirmed = self.store.set_reflection_status(
+            account_id, movie_id, draft["version"], "confirm"
+        )["current"]
+        self.assertEqual(confirmed["status"], "confirmed")
+        edited = self.store.create_reflection_version(
+            account_id, movie_id, "这是用户编辑后确认保存的新版本。", "ai_then_user", "confirmed",
+            confirmed["version"],
+        )
+        locked = self.store.set_reflection_status(
+            account_id, movie_id, edited["version"], "lock"
+        )["current"]
+        self.assertEqual(locked["status"], "locked")
+        ai_suggestion = self.store.create_reflection_version(
+            account_id, movie_id, "锁定后只能产生独立草稿，不能覆盖确认快照。", "ai", "draft"
+        )
+        self.assertEqual(ai_suggestion["status"], "draft")
+        self.assertEqual(
+            self.store.get_movie_state(account_id, movie_id)["note"], locked["content"]
+        )
+        self.assertTrue(self.store.delete_reflections(account_id, movie_id))
+        self.assertEqual(self.store.get_movie_state(account_id, movie_id)["state"], "watched")
+        self.assertIsNone(self.store.reflection_bundle(account_id, movie_id)["current"])
+
+    def test_legacy_note_migrates_once_without_fabricating_empty_note(self) -> None:
+        account_id = self.account()
+        first_movie, second_movie = self.store.all_movies()[:2]
+        self.store.set_movie_state(account_id, first_movie["id"], "watched", "legacy")
+        self.store.set_movie_state(account_id, second_movie["id"], "watched", "legacy")
+        with self.store.connect() as connection:
+            connection.execute(
+                "UPDATE user_movie_states SET note = ? WHERE account_id = ? AND movie_id = ?",
+                ("旧版本中已经存在的观后感。", account_id, first_movie["id"]),
+            )
+        Store(self.settings.database_path, self.settings.invite_pepper, self.settings.session_secret)
+        migrated = self.store.reflection_bundle(account_id, first_movie["id"])
+        empty = self.store.reflection_bundle(account_id, second_movie["id"])
+        self.assertEqual(migrated["current"]["status"], "confirmed")
+        self.assertEqual(migrated["current"]["version"], 1)
+        self.assertIsNone(empty["current"])
+        Store(self.settings.database_path, self.settings.invite_pepper, self.settings.session_secret)
+        self.assertEqual(len(self.store.reflection_bundle(account_id, first_movie["id"])["history"]), 1)
+
+    def test_product_and_usage_events_exclude_private_content(self) -> None:
+        account_id = self.account()
+        self.store.record_product_event(
+            "chat_turn_succeeded", account_id,
+            {"mode": "discussion", "message": "不应保存的原话", "reflection_content": "隐私正文", "latency_ms": 12},
+        )
+        self.store.save_usage_pricing({
+            "version": "test-pricing-v1",
+            "rates": {"chat": {"input_per_million": 2, "output_per_million": 4, "call_cost": 0}},
+        })
+        self.store.record_model_usage(
+            "chat", "demo", "demo-v1", True, 12, account_id,
+            input_units=500_000, output_units=250_000,
+        )
+        with self.store.connect() as connection:
+            properties = connection.execute(
+                "SELECT properties_json FROM product_events WHERE event_name = 'chat_turn_succeeded'"
+            ).fetchone()[0]
+        self.assertNotIn("不应保存", properties)
+        self.assertNotIn("隐私正文", properties)
+        self.assertIn("latency_ms", properties)
+        metrics = self.store.metrics_summary()
+        self.assertEqual(metrics["usage"][0]["operation"], "chat")
+        self.assertEqual(metrics["usage"][0]["estimated_cost"], 2.0)
+        self.assertEqual(metrics["pricing"]["version"], "test-pricing-v1")
+
+
 class AgentConfigurationTests(ProductFixture):
     def test_model_configuration_is_persistent_and_secret_is_masked(self) -> None:
         runtime = AgentRuntime(self.settings, self.store, self.catalog)
@@ -387,6 +531,7 @@ class IntegrationConfigurationTests(ProductFixture):
         self.assertIn("name.after(wrap)", script)
         self.assertIn("background: var(--wine)", styles)
         self.assertIn('id="opening-config-form"', admin)
+        self.assertIn('id="usage-pricing-form"', admin)
 
 
 class HTTPFlowTests(ProductFixture):
@@ -444,7 +589,26 @@ class HTTPFlowTests(ProductFixture):
         history = self.request("/api/history?state=watched")
         self.assertEqual([item["movie_id"] for item in history["items"]], ["us-interstellar-2014"])
 
-    def test_discussion_updates_reflection_note_visible_in_history(self) -> None:
+    def test_new_account_completes_five_movie_onboarding_and_gets_visible_profile(self) -> None:
+        self.login()
+        me = self.request("/api/me")
+        self.assertEqual(me["onboarding"]["status"], "not_started")
+        candidates = self.request("/api/onboarding/candidates")["items"]
+        self.assertGreaterEqual(len(candidates), 5)
+        for index, movie in enumerate(candidates[:5]):
+            result = self.request(
+                "/api/onboarding/movies", "POST",
+                {"movie_id": movie["id"], "sentiment": ["positive", "neutral", "negative"][index % 3]},
+            )
+            self.assertEqual(result["selected_count"], index + 1)
+        completed = self.request("/api/onboarding/complete", "POST", {})
+        self.assertEqual(completed["profile"]["onboarding_status"], "completed")
+        self.assertEqual(completed["profile"]["taste_version"], 1)
+        visible = self.request("/api/taste-profile")["profile"]
+        self.assertTrue(visible["taste_summary"])
+        self.assertEqual(self.request("/api/me")["onboarding"]["selected_count"], 5)
+
+    def test_discussion_creates_reflection_only_after_explicit_request_and_confirmation(self) -> None:
         self.login()
         self.server.app.agent.summarize_reflection = lambda *args: (
             "你被库珀与女儿之间跨越时间的牵挂打动，也觉得结尾同时带着希望和遗憾。"
@@ -459,7 +623,26 @@ class HTTPFlowTests(ProductFixture):
                 "spoilers_allowed": True,
             },
         )
-        self.assertTrue(response["reflection_updated"])
+        self.assertFalse(response["reflection_updated"])
+        history = self.request("/api/history?state=watched")
+        self.assertFalse(history["items"][0].get("note"))
+        generated = self.request(
+            "/api/reflections/us-interstellar-2014/generate",
+            "POST",
+            {
+                "history": [
+                    {"role": "user", "content": "父女告别让我很难受，但最后又有希望。"},
+                    {"role": "assistant", "content": response["reply"]},
+                ]
+            },
+        )
+        self.assertEqual(generated["current"]["status"], "draft")
+        confirmed = self.request(
+            "/api/reflections/us-interstellar-2014/confirm",
+            "POST",
+            {"version": generated["current"]["version"]},
+        )
+        self.assertEqual(confirmed["current"]["status"], "confirmed")
         history = self.request("/api/history?state=watched")
         self.assertIn("跨越时间", history["items"][0]["note"])
 
@@ -482,6 +665,22 @@ class HTTPFlowTests(ProductFixture):
         ids = {movie["id"] for movie in response["recommendations"]}
         self.assertNotIn("us-inside-out-2015", ids)
         self.assertTrue(ids)
+        self.assertTrue(all(movie["impression_id"].startswith("rec_") for movie in response["recommendations"]))
+
+    def test_recommendation_feedback_updates_state_through_exposure(self) -> None:
+        self.login()
+        response = self.request(
+            "/api/chat", "POST",
+            {"mode": "recommendation", "message": "想看一部轻松的电影", "history": []},
+        )
+        movie = response["recommendations"][0]
+        feedback = self.request(
+            f"/api/recommendations/{movie['impression_id']}/feedback", "POST",
+            {"action": "watchlist"},
+        )
+        self.assertEqual(feedback["feedback"]["movie_id"], movie["id"])
+        history = self.request("/api/history?state=watchlist")
+        self.assertEqual(history["items"][0]["movie_id"], movie["id"])
 
     def test_replacement_recommendation_keeps_previous_intent(self) -> None:
         self.login()
@@ -538,6 +737,17 @@ class HTTPFlowTests(ProductFixture):
         self.assertEqual(len(generated["codes"]), 2)
         listing = self.request("/api/admin/invites")
         self.assertEqual(len(listing["items"]), 2)
+        metrics = self.request("/api/admin/metrics/summary")
+        self.assertIn("accounts", metrics)
+        self.assertIn("usage", metrics)
+        pricing = self.request(
+            "/api/admin/usage-pricing", "POST",
+            {"version": "provider-price-2026-08", "rates": {
+                "chat": {"input_per_million": 1.5, "output_per_million": 6, "call_cost": 0}
+            }},
+        )["pricing"]
+        self.assertEqual(pricing["version"], "provider-price-2026-08")
+        self.assertEqual(self.request("/api/admin/usage-pricing")["currency"], "CNY")
 
     def test_admin_can_manage_model_and_independent_prompts(self) -> None:
         self.request("/api/admin/login", "POST", {"admin_token": "test-admin-token"})

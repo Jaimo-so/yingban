@@ -90,13 +90,18 @@ class MovieCatalog:
         include_recent: bool = False,
     ) -> list[dict[str, Any]]:
         watched = self.store.watched_ids(account_id)
+        persistently_excluded = self.store.persistently_excluded_ids(account_id)
         recent = set() if include_recent else self.store.recent_recommended_ids(account_id)
         wanted_tags = self._wanted_tags(request)
+        profile = self.store.account_profile(account_id)
+        for dimension in profile.get("taste_dimensions", []):
+            if dimension.get("direction") == "prefer" and not dimension.get("hidden"):
+                wanted_tags.add(str(dimension.get("label", "")).split(" · ", 1)[-1])
         excluded_tags = self._excluded_tags(request)
 
         ranked: list[tuple[float, dict[str, Any], list[str]]] = []
         for movie in self.store.all_movies():
-            if movie["id"] in watched or movie["id"] in recent:
+            if movie["id"] in watched or movie["id"] in persistently_excluded or movie["id"] in recent:
                 continue
             searchable_tags = {
                 *movie["genres"],
@@ -142,7 +147,9 @@ class MovieCatalog:
                 if len(selected) >= limit:
                     break
 
-        self.store.record_recommendations(account_id, selected, request)
+        impression_ids = self.store.record_recommendations(account_id, selected, request)
+        for item in selected:
+            item["impression_id"] = impression_ids.get(str(item["id"]), "")
         return selected
 
     @staticmethod

@@ -6,6 +6,7 @@ const state = {
   mode: null,
   chatHistory: [],
   selectedMovieId: null,
+  selectedMovie: null,
   historyState: "watched",
   sending: false,
   voiceConfigured: false,
@@ -20,6 +21,11 @@ const state = {
   activeVoiceAudio: null,
   reflectionMovie: null,
   reflectionTrigger: null,
+  reflectionBundle: null,
+  onboardingStatus: "not_started",
+  onboardingSelected: [],
+  tasteProfile: null,
+  autoGenerateReflectionDrafts: true,
   recorder: null,
   recordingStream: null,
   recordingChunks: [],
@@ -72,13 +78,17 @@ function showAuthenticated(me) {
   $("#mode-badge").hidden = !me.demo_mode;
   state.voiceConfigured = Boolean(me.voice_available);
   state.openings = { ...state.openings, ...(me.openings || {}) };
+  state.onboardingStatus = me.onboarding?.status || "not_started";
+  state.autoGenerateReflectionDrafts = me.reflection_preferences?.auto_generate_drafts !== false;
+  $("#reflection-auto-generate").checked = state.autoGenerateReflectionDrafts;
   state.voiceSupported = Boolean(window.MediaRecorder && navigator.mediaDevices?.getUserMedia);
   const voiceButton = $("#voice-mode-button");
   voiceButton.disabled = !state.voiceSupported;
   voiceButton.title = state.voiceSupported ? "语音输入" : "当前浏览器不支持录音";
   updateVoiceAutoPlayToggle();
   setVoiceMode(false);
-  navigate("home");
+  if (state.onboardingStatus === "completed") navigate("home");
+  else openOnboarding();
 }
 
 function showLogin() {
@@ -98,10 +108,165 @@ async function boot() {
 }
 
 function navigate(view) {
+  if (state.onboardingStatus !== "completed" && view !== "onboarding") view = "onboarding";
   $$(".view").forEach((node) => { node.hidden = node.id !== `${view}-view`; });
   $$("[data-nav]").forEach((node) => node.classList.toggle("is-active", node.dataset.nav === view));
   if (view === "history") loadHistory();
   window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+async function openOnboarding() {
+  navigate("onboarding");
+  await Promise.all([loadOnboarding(), loadOnboardingCandidates()]);
+}
+
+async function loadOnboarding() {
+  const data = await api("/api/onboarding");
+  state.onboardingStatus = data.status;
+  state.onboardingSelected = data.selected || [];
+  renderOnboardingSelected();
+  return data;
+}
+
+async function loadOnboardingCandidates(query = "") {
+  const wrap = $("#onboarding-candidates");
+  wrap.setAttribute("aria-busy", "true");
+  try {
+    const data = await api(`/api/onboarding/candidates${query ? `?query=${encodeURIComponent(query)}` : ""}`);
+    wrap.replaceChildren(...data.items.map(onboardingCandidate));
+    if (!data.items.length) {
+      const empty = document.createElement("p");
+      empty.className = "empty-state";
+      empty.textContent = "没有找到这部电影，试试原名或别名。";
+      wrap.append(empty);
+    }
+  } finally {
+    wrap.removeAttribute("aria-busy");
+  }
+}
+
+function onboardingCandidate(movie) {
+  const card = document.createElement("article");
+  card.className = "onboarding-movie";
+  card.append(posterNode(movie));
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = "选这部";
+  button.disabled = state.onboardingSelected.length >= 5;
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    try {
+      await api("/api/onboarding/movies", {
+        method: "POST",
+        body: JSON.stringify({ movie_id: movie.id, sentiment: "neutral" }),
+      });
+      await loadOnboarding();
+      card.remove();
+    } catch (error) {
+      showToast(error.message);
+      button.disabled = false;
+    }
+  });
+  card.append(button);
+  return card;
+}
+
+function renderOnboardingSelected() {
+  const count = state.onboardingSelected.length;
+  $("#onboarding-count").textContent = `${count}/5`;
+  $("#onboarding-remaining").textContent = count === 5 ? "可以生成初始画像" : `还需要 ${5 - count} 部`;
+  const complete = $("#onboarding-complete");
+  complete.disabled = count !== 5;
+  complete.textContent = count === 5 ? "生成我的初始口味" : `还需要选择 ${5 - count} 部电影`;
+  $("#onboarding-selected").replaceChildren(...state.onboardingSelected.map((movie, index) => {
+    const item = document.createElement("li");
+    item.className = "selected-movie";
+    const head = document.createElement("div");
+    head.className = "selected-movie-head";
+    const title = document.createElement("strong");
+    title.textContent = `${index + 1}. ${movie.title_zh}`;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.setAttribute("aria-label", `从冷启动选择中移除《${movie.title_zh}》`);
+    remove.textContent = "移除";
+    remove.addEventListener("click", async () => {
+      await api(`/api/onboarding/movies/${encodeURIComponent(movie.id)}`, { method: "DELETE" });
+      await Promise.all([loadOnboarding(), loadOnboardingCandidates()]);
+    });
+    head.append(title, remove);
+    const sentiments = document.createElement("div");
+    sentiments.className = "sentiment-options";
+    for (const [value, label] of [["positive", "喜欢"], ["neutral", "一般"], ["negative", "不喜欢"]]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = label;
+      button.setAttribute("aria-pressed", String(movie.sentiment === value));
+      button.addEventListener("click", async () => {
+        await api("/api/onboarding/movies", {
+          method: "POST",
+          body: JSON.stringify({ movie_id: movie.id, sentiment: value, updating: true }),
+        });
+        await loadOnboarding();
+      });
+      sentiments.append(button);
+    }
+    item.append(head, sentiments);
+    return item;
+  }));
+  $$(".onboarding-movie > button").forEach((button) => { button.disabled = count >= 5; });
+}
+
+async function completeOnboarding() {
+  const button = $("#onboarding-complete");
+  button.disabled = true;
+  $("#onboarding-status").textContent = "正在根据这 5 部电影整理可见口味…";
+  try {
+    const data = await api("/api/onboarding/complete", { method: "POST", body: "{}" });
+    state.onboardingStatus = "completed";
+    state.tasteProfile = data.profile;
+    $("#onboarding-status").textContent = "初始口味已生成。";
+    await openTasteProfile();
+  } catch (error) {
+    $("#onboarding-status").textContent = error.message;
+    button.disabled = false;
+  }
+}
+
+async function openTasteProfile() {
+  const data = await api("/api/taste-profile");
+  state.tasteProfile = data.profile;
+  $("#taste-summary").textContent = data.profile.taste_summary || "还没有形成口味画像。";
+  const visible = (data.profile.taste_dimensions || []).filter((item) => !item.hidden);
+  $("#taste-dimensions").replaceChildren(...visible.map((dimension) => {
+    const card = document.createElement("article");
+    card.className = "taste-dimension";
+    const head = document.createElement("div");
+    head.className = "taste-dimension-head";
+    const title = document.createElement("strong");
+    title.textContent = dimension.label;
+    const direction = document.createElement("span");
+    direction.className = "direction";
+    direction.textContent = dimension.direction === "prefer" ? "目前偏好" : "目前避开";
+    head.append(title, direction);
+    const evidence = document.createElement("p");
+    evidence.className = "taste-evidence";
+    evidence.textContent = `电影证据：${(dimension.evidence || []).map((item) => `《${item.title}》`).join("、")}`;
+    const correct = document.createElement("button");
+    correct.type = "button";
+    correct.className = "text-button";
+    correct.textContent = "这条不准，移除结论";
+    correct.addEventListener("click", async () => {
+      await api("/api/taste-profile/corrections", {
+        method: "POST",
+        body: JSON.stringify({ dimension_id: dimension.id }),
+      });
+      await openTasteProfile();
+    });
+    card.append(head, evidence, correct);
+    return card;
+  }));
+  const dialog = $("#taste-dialog");
+  if (!dialog.open) dialog.showModal();
 }
 
 async function openChat(mode, movie = null) {
@@ -112,6 +277,8 @@ async function openChat(mode, movie = null) {
   state.mode = mode;
   state.chatHistory = [];
   state.selectedMovieId = movie?.id || null;
+  state.selectedMovie = movie;
+  $("#reflection-generate-button").hidden = !(mode === "discussion" && movie);
   $("#chat-messages").replaceChildren();
   $("#spoiler-control").hidden = mode !== "discussion";
 
@@ -239,22 +406,55 @@ function renderRecommendations(movies) {
     const actions = document.createElement("div");
     actions.className = "movie-actions";
     actions.append(
-      miniButton("想看", () => markMovie(movie, "watchlist", "recommendation")),
+      miniButton("想看", () => sendRecommendationFeedback(movie, "watchlist")),
       miniButton("看过了，换一部", async () => {
-        await markMovie(movie, "watched", "recommendation_feedback");
+        await sendRecommendationFeedback(movie, "watched");
         await sendMessage(`《${movie.title_zh}》我看过了，换一个方向相近但没看过的。`);
       }),
       miniButton("聊聊这部", async () => {
-        await markMovie(movie, "watched", "discussion");
+        await sendRecommendationFeedback(movie, "discuss");
         openChat("discussion", movie);
-      })
+      }),
+      miniButton("不适合现在", () => { reasons.hidden = !reasons.hidden; })
     );
-    body.append(meta, reason, notes, actions);
+    const reasons = document.createElement("div");
+    reasons.className = "feedback-reasons";
+    reasons.hidden = true;
+    for (const [action, label] of [
+      ["not_now", "暂时不想看"], ["wrong_tone", "氛围不对"],
+      ["wrong_genre", "类型不对"], ["too_heavy", "太沉重"],
+      ["not_interested", "以后也别推荐"],
+    ]) {
+      reasons.append(miniButton(label, async () => {
+        await sendRecommendationFeedback(movie, action);
+        reasons.replaceChildren(Object.assign(document.createElement("span"), {
+          className: "feedback-note",
+          textContent: "已记录。它只影响电影推荐，不会被用来推断你的现实生活。",
+        }));
+      }));
+    }
+    body.append(meta, reason, notes, actions, reasons);
     card.append(poster, body);
     row.append(card);
   });
   $("#chat-messages").append(row);
   row.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+async function sendRecommendationFeedback(movie, action) {
+  if (!movie.impression_id) throw new Error("这张推荐卡缺少可追踪曝光，请重新请求推荐");
+  await api(`/api/recommendations/${encodeURIComponent(movie.impression_id)}/feedback`, {
+    method: "POST",
+    body: JSON.stringify({ action }),
+  });
+  const labels = {
+    watchlist: "已加入想看", watched: "已加入看过", discuss: "已进入讨论",
+    not_now: "已记为暂时不看", wrong_tone: "已记下氛围不符",
+    wrong_genre: "已记下类型不符", too_heavy: "已记下太沉重",
+    not_interested: "已加入持续排除",
+  };
+  showToast(`${labels[action] || "反馈已记录"} · 只影响电影推荐`);
+  refreshMe();
 }
 
 function miniButton(label, action) {
@@ -298,7 +498,9 @@ async function sendMessage(forcedText = null, options = {}) {
     loading.remove();
     if (data.selected_movie) {
       state.selectedMovieId = data.selected_movie.id;
+      state.selectedMovie = data.selected_movie;
       $("#chat-title").textContent = `聊聊《${data.selected_movie.title_zh}》`;
+      $("#reflection-generate-button").hidden = state.mode !== "discussion";
     }
     const assistantMessage = renderMessage("assistant", data.reply);
     state.chatHistory.push({ role: "assistant", content: data.reply });
@@ -395,19 +597,89 @@ function historyItem(movie) {
   return card;
 }
 
-function openReflection(movie, trigger) {
+async function openReflection(movie, trigger) {
   state.reflectionMovie = movie;
   state.reflectionTrigger = trigger;
   $("#reflection-title").textContent = `《${movie.title_zh}》观后感`;
   $("#reflection-meta").textContent = [movie.year, ...(movie.genres || []).slice(0, 3)].filter(Boolean).join(" · ");
   $("#reflection-poster").replaceChildren(posterNode(movie));
-  const note = String(movie.note || "").trim();
-  $("#reflection-note").textContent = note;
-  $("#reflection-note").hidden = !note;
-  $("#reflection-empty").hidden = Boolean(note);
   const dialog = $("#reflection-dialog");
   dialog.showModal();
   dialog.querySelector(".icon-button").focus();
+  try {
+    const data = await api(`/api/reflections/${encodeURIComponent(movie.id || movie.movie_id)}`);
+    state.reflectionBundle = data;
+    renderReflectionBundle();
+  } catch (error) {
+    $("#reflection-empty").hidden = false;
+    $("#reflection-empty").textContent = error.message;
+  }
+}
+
+function renderReflectionBundle() {
+  const current = state.reflectionBundle?.current;
+  const note = String(current?.content || "");
+  $("#reflection-note").value = note;
+  $("#reflection-note").hidden = !current;
+  $("#reflection-empty").hidden = Boolean(current);
+  const labels = { draft: "AI 草稿", confirmed: "已确认", locked: "已锁定" };
+  $("#reflection-state").textContent = current
+    ? `${labels[current.status] || current.status} · 第 ${current.version} 版 · ${current.source === "ai" ? "AI 整理" : current.source === "user" ? "用户撰写" : "AI 草稿后编辑"} · ${new Date(current.updated_at).toLocaleString("zh-CN")}`
+    : "尚无观后感";
+  $("#reflection-confirm").hidden = current?.status !== "draft";
+  $("#reflection-lock").hidden = !current || current.status === "draft";
+  $("#reflection-lock").textContent = current?.status === "locked" ? "解锁" : "锁定";
+  $("#reflection-save").hidden = !current;
+  $("#reflection-regenerate").hidden = !current;
+  $("#reflection-delete").hidden = !current;
+}
+
+async function generateReflection(movie = state.reflectionMovie) {
+  if (!movie) return;
+  const movieId = movie.id || movie.movie_id;
+  const data = await api(`/api/reflections/${encodeURIComponent(movieId)}/generate`, {
+    method: "POST",
+    body: JSON.stringify({ history: state.chatHistory, regenerate: Boolean(state.reflectionBundle?.current) }),
+  });
+  state.reflectionBundle = data;
+  showToast("新的 AI 观后感草稿已生成，确认前不会成为你的正式版本");
+  if (!$("#reflection-dialog").open) await openReflection(movie, null);
+  else renderReflectionBundle();
+}
+
+async function saveReflectionEdit() {
+  const movieId = state.reflectionMovie?.id || state.reflectionMovie?.movie_id;
+  const current = state.reflectionBundle?.current;
+  if (!movieId || !current) return;
+  const data = await api(`/api/reflections/${encodeURIComponent(movieId)}`, {
+    method: "POST",
+    body: JSON.stringify({ content: $("#reflection-note").value, based_on_version: current.version }),
+  });
+  state.reflectionBundle = data;
+  renderReflectionBundle();
+  showToast("你的编辑已保存为新版本");
+}
+
+async function reflectionStatusAction(action) {
+  const movieId = state.reflectionMovie?.id || state.reflectionMovie?.movie_id;
+  const current = state.reflectionBundle?.current;
+  if (!movieId || !current) return;
+  const data = await api(`/api/reflections/${encodeURIComponent(movieId)}/${action}`, {
+    method: "POST",
+    body: JSON.stringify({ version: current.version }),
+  });
+  state.reflectionBundle = data;
+  renderReflectionBundle();
+  showToast({ confirm: "草稿已确认", lock: "当前版本已锁定", unlock: "当前版本已解锁" }[action]);
+}
+
+async function deleteReflection() {
+  const movieId = state.reflectionMovie?.id || state.reflectionMovie?.movie_id;
+  if (!movieId || !window.confirm("只删除这部电影的观后感，保留“看过”状态。继续吗？")) return;
+  await api(`/api/reflections/${encodeURIComponent(movieId)}`, { method: "DELETE" });
+  state.reflectionBundle = { current: null, history: [] };
+  renderReflectionBundle();
+  showToast("观后感已删除，“看过”状态仍保留");
 }
 
 function autoResize(textarea) {
@@ -673,7 +945,75 @@ $("#brand-home").addEventListener("click", () => navigate("home"));
 $$("[data-nav]").forEach((button) => button.addEventListener("click", () => navigate(button.dataset.nav)));
 $("#discussion-card").addEventListener("click", () => openChat("discussion"));
 $("#recommendation-card").addEventListener("click", () => openChat("recommendation"));
-$("#chat-back").addEventListener("click", () => navigate("home"));
+$("#chat-back").addEventListener("click", () => {
+  const movie = state.selectedMovie;
+  const history = [...state.chatHistory];
+  navigate("home");
+  if (state.mode === "discussion" && movie && state.autoGenerateReflectionDrafts
+      && history.some((item) => item.role === "user" && item.content.trim().length >= 12)) {
+    api(`/api/reflections/${encodeURIComponent(movie.id)}/generate`, {
+      method: "POST", body: JSON.stringify({ history }),
+    }).then(() => showToast("已根据这次有效电影讨论生成一份 AI 草稿"))
+      .catch(() => { /* 没有足够新内容时安静降级，不影响返回首页。 */ });
+  }
+});
+$("#onboarding-search-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const query = $("#onboarding-search-input").value.trim();
+  $("#onboarding-reset-search").hidden = !query;
+  await loadOnboardingCandidates(query);
+});
+$("#onboarding-reset-search").addEventListener("click", async () => {
+  $("#onboarding-search-input").value = "";
+  $("#onboarding-reset-search").hidden = true;
+  await loadOnboardingCandidates();
+});
+$("#onboarding-complete").addEventListener("click", completeOnboarding);
+$("#taste-profile-button").addEventListener("click", openTasteProfile);
+$("#taste-recommend").addEventListener("click", () => {
+  $("#taste-dialog").close();
+  navigate("home");
+  openChat("recommendation");
+});
+$("#taste-discuss").addEventListener("click", async () => {
+  if (!state.onboardingSelected.length) await loadOnboarding();
+  $("#taste-dialog").close();
+  const movie = state.onboardingSelected[0];
+  if (movie) openChat("discussion", movie);
+});
+$("#reflection-generate-button").addEventListener("click", async () => {
+  try { await generateReflection(state.selectedMovie); } catch (error) { showToast(error.message); }
+});
+$("#reflection-save").addEventListener("click", async () => {
+  try { await saveReflectionEdit(); } catch (error) { showToast(error.message); }
+});
+$("#reflection-confirm").addEventListener("click", async () => {
+  try { await reflectionStatusAction("confirm"); } catch (error) { showToast(error.message); }
+});
+$("#reflection-lock").addEventListener("click", async () => {
+  try {
+    await reflectionStatusAction(state.reflectionBundle?.current?.status === "locked" ? "unlock" : "lock");
+  } catch (error) { showToast(error.message); }
+});
+$("#reflection-regenerate").addEventListener("click", async () => {
+  try { await generateReflection(); } catch (error) { showToast(error.message); }
+});
+$("#reflection-delete").addEventListener("click", async () => {
+  try { await deleteReflection(); } catch (error) { showToast(error.message); }
+});
+$("#reflection-auto-generate").addEventListener("change", async (event) => {
+  try {
+    const data = await api("/api/reflection-preferences", {
+      method: "POST",
+      body: JSON.stringify({ auto_generate_drafts: event.target.checked }),
+    });
+    state.autoGenerateReflectionDrafts = data.auto_generate_drafts;
+    showToast(data.auto_generate_drafts ? "已开启自动生成草稿" : "已关闭自动生成草稿");
+  } catch (error) {
+    event.target.checked = state.autoGenerateReflectionDrafts;
+    showToast(error.message);
+  }
+});
 $("#chat-form").addEventListener("submit", (event) => { event.preventDefault(); sendMessage(); });
 $("#voice-mode-button").addEventListener("click", () => setVoiceMode(!state.voiceMode));
 $("#voice-autoplay-toggle").addEventListener("click", () => setVoiceAutoPlay(!state.voiceAutoPlay));

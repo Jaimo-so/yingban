@@ -166,12 +166,40 @@ class YingbanHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/onboarding/movies/"):
+            account_id = self._require_user()
+            if not account_id:
+                return
+            movie_id = unquote(parsed.path.removeprefix("/api/onboarding/movies/"))
+            removed = self.app.store.remove_onboarding_movie(account_id, movie_id)
+            if removed:
+                self.app.store.record_product_event(
+                    "onboarding_movie_removed", account_id, {"movie_id": movie_id}
+                )
+            self._json({"ok": removed, **self._onboarding_payload(account_id)})
+            return
+        if parsed.path.startswith("/api/reflections/"):
+            account_id = self._require_user()
+            if not account_id:
+                return
+            movie_id = unquote(parsed.path.removeprefix("/api/reflections/"))
+            removed = self.app.store.delete_reflections(account_id, movie_id)
+            if removed:
+                self.app.store.record_product_event(
+                    "reflection_deleted", account_id, {"movie_id": movie_id}
+                )
+            self._json({"ok": removed})
+            return
         if parsed.path.startswith("/api/history/"):
             account_id = self._require_user()
             if not account_id:
                 return
             movie_id = unquote(parsed.path.removeprefix("/api/history/"))
             removed = self.app.store.remove_movie_state(account_id, movie_id)
+            if removed:
+                self.app.store.record_product_event(
+                    "movie_state_deleted", account_id, {"movie_id": movie_id}
+                )
             self._json({"ok": removed})
             return
         self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
@@ -188,6 +216,8 @@ class YingbanHandler(BaseHTTPRequestHandler):
                 self._json({"authenticated": False})
                 return
             watched_count = len(self.app.store.watched_ids(account_id))
+            profile = self.app.store.account_profile(account_id)
+            selected_count = len(self.app.store.onboarding_movies(account_id))
             self._json(
                 {
                     "authenticated": True,
@@ -197,8 +227,64 @@ class YingbanHandler(BaseHTTPRequestHandler):
                     "voice_available": bool(
                         self.app.voice and self.app.voice.config().enabled
                     ),
+                    "onboarding": {
+                        "status": profile["onboarding_status"],
+                        "selected_count": selected_count,
+                    },
+                    "taste_profile": {"version": profile["taste_version"]},
+                    "reflection_preferences": {
+                        "auto_generate_drafts": profile["auto_generate_reflection_drafts"]
+                    },
                 }
             )
+            return
+
+        if path == "/api/onboarding":
+            account_id = self._require_user()
+            if not account_id:
+                return
+            self._json(self._onboarding_payload(account_id))
+            return
+
+        if path == "/api/onboarding/candidates":
+            account_id = self._require_user()
+            if not account_id:
+                return
+            query_text = str(query.get("query", [""])[0]).strip()
+            if query_text:
+                items = self.app.catalog.search(query_text, limit=18)
+                if not items and self.app.internet is not None:
+                    try:
+                        items = self.app.internet.search_movies(query_text)
+                    except Exception as error:  # noqa: BLE001
+                        LOG.warning("onboarding movie search failed: %s", type(error).__name__)
+            else:
+                items = self._diverse_onboarding_candidates()
+            selected_ids = {item["id"] for item in self.app.store.onboarding_movies(account_id)}
+            self._json({"items": [public_movie(item) for item in items if item["id"] not in selected_ids]})
+            return
+
+        if path == "/api/taste-profile":
+            account_id = self._require_user()
+            if not account_id:
+                return
+            profile = self.app.store.account_profile(account_id)
+            self.app.store.record_product_event(
+                "taste_profile_viewed", account_id, {"version": profile["taste_version"]}
+            )
+            self._json({"profile": profile})
+            return
+
+        if path.startswith("/api/reflections/"):
+            account_id = self._require_user()
+            if not account_id:
+                return
+            movie_id = unquote(path.removeprefix("/api/reflections/"))
+            movie = self.app.store.movie(movie_id)
+            if movie is None:
+                self._json({"error": "movie not found"}, HTTPStatus.NOT_FOUND)
+                return
+            self._json({"movie": public_movie(movie), **self.app.store.reflection_bundle(account_id, movie_id)})
             return
 
         if path == "/api/history":
@@ -244,6 +330,18 @@ class YingbanHandler(BaseHTTPRequestHandler):
             self._json(result)
             return
 
+        if path == "/api/admin/metrics/summary":
+            if not self._require_admin():
+                return
+            self._json(self.app.store.metrics_summary())
+            return
+
+        if path == "/api/admin/usage-pricing":
+            if not self._require_admin():
+                return
+            self._json(self.app.store.usage_pricing())
+            return
+
         self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
     def _handle_api_post(self, path: str) -> None:
@@ -258,8 +356,160 @@ class YingbanHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/auth/logout":
             token = cookie_value(self.headers, USER_COOKIE)
+            account_id = self.app.store.account_for_session(token)
+            if account_id:
+                self.app.store.record_product_event("logout", account_id)
             self.app.store.logout(token)
             self._json({"ok": True}, cookies=[self._expired_cookie(USER_COOKIE)])
+            return
+        if path == "/api/onboarding/movies":
+            account_id = self._require_user()
+            if not account_id:
+                return
+            try:
+                item = self.app.store.add_onboarding_movie(
+                    account_id,
+                    str(payload.get("movie_id", "")),
+                    str(payload.get("sentiment", "")),
+                )
+            except ValueError as error:
+                self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+            event_name = "onboarding_feedback_changed" if payload.get("updating") else "onboarding_movie_added"
+            self.app.store.record_product_event(
+                event_name, account_id,
+                {"movie_id": item["id"], "sentiment": item["sentiment"]},
+            )
+            self._json({"ok": True, "item": public_movie(item), **self._onboarding_payload(account_id)})
+            return
+        if path == "/api/onboarding/complete":
+            account_id = self._require_user()
+            if not account_id:
+                return
+            try:
+                profile = self.app.store.complete_onboarding(account_id)
+            except ValueError as error:
+                self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+            self.app.store.record_product_event(
+                "onboarding_completed", account_id, {"selected_count": 5}
+            )
+            self.app.store.record_product_event(
+                "taste_profile_generated", account_id, {"version": profile["taste_version"]}
+            )
+            self.app.store.record_model_usage(
+                "taste_profile", "deterministic", "evidence-profile-v1", True, 0, account_id
+            )
+            self._json({"ok": True, "profile": profile})
+            return
+        if path == "/api/taste-profile/corrections":
+            account_id = self._require_user()
+            if not account_id:
+                return
+            try:
+                profile = self.app.store.correct_taste_dimension(
+                    account_id, str(payload.get("dimension_id", ""))
+                )
+            except ValueError as error:
+                self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+            self.app.store.record_product_event(
+                "taste_profile_corrected", account_id,
+                {"dimension_id": str(payload.get("dimension_id", "")), "version": profile["taste_version"]},
+            )
+            self._json({"ok": True, "profile": profile})
+            return
+        if path == "/api/reflection-preferences":
+            account_id = self._require_user()
+            if not account_id:
+                return
+            profile = self.app.store.set_reflection_preference(
+                account_id, bool(payload.get("auto_generate_drafts", True))
+            )
+            self._json({"ok": True, "auto_generate_drafts": profile["auto_generate_reflection_drafts"]})
+            return
+        if path.startswith("/api/recommendations/") and path.endswith("/feedback"):
+            account_id = self._require_user()
+            if not account_id:
+                return
+            impression_id = unquote(path.removeprefix("/api/recommendations/").removesuffix("/feedback"))
+            try:
+                feedback = self.app.store.record_recommendation_feedback(
+                    account_id, impression_id, str(payload.get("action", "")),
+                    str(payload.get("reason_code", "")) or None,
+                )
+            except ValueError as error:
+                self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+            self.app.store.record_product_event(
+                "recommendation_feedback", account_id,
+                {"impression_id": impression_id, "movie_id": feedback["movie_id"], "action": feedback["action"]},
+            )
+            self._json({"ok": True, "feedback": feedback})
+            return
+        if path.startswith("/api/reflections/"):
+            account_id = self._require_user()
+            if not account_id:
+                return
+            suffix = path.removeprefix("/api/reflections/")
+            parts = [unquote(part) for part in suffix.split("/") if part]
+            if not parts:
+                self._json({"error": "movie not found"}, HTTPStatus.NOT_FOUND)
+                return
+            movie_id = parts[0]
+            action = parts[1] if len(parts) > 1 else "save"
+            if self.app.store.movie(movie_id) is None:
+                self._json({"error": "movie not found"}, HTTPStatus.NOT_FOUND)
+                return
+            try:
+                if action == "generate":
+                    bundle = self.app.store.reflection_bundle(account_id, movie_id)
+                    base = bundle["confirmed"] or bundle["current"] or {}
+                    history = payload.get("history", []) if isinstance(payload.get("history"), list) else []
+                    user_messages = [
+                        str(item.get("content", "")).strip() for item in history
+                        if isinstance(item, dict) and item.get("role") == "user"
+                    ]
+                    if not any(len(message) >= 12 for message in user_messages) and payload.get("regenerate") and base.get("content"):
+                        user_messages = [str(base["content"])]
+                        history = [{"role": "user", "content": str(base["content"])}]
+                    if not any(len(message) >= 12 for message in user_messages):
+                        raise ValueError("还需要至少一句更具体的电影感受，才能整理草稿")
+                    self.app.store.record_product_event("reflection_requested", account_id, {"movie_id": movie_id})
+                    draft = self.app.agent.summarize_reflection(
+                        self.app.store.movie(movie_id) or {}, str(base.get("content", "")),
+                        history[:-2], user_messages[-1],
+                        next((str(item.get("content", "")) for item in reversed(history) if isinstance(item, dict) and item.get("role") == "assistant"), ""),
+                    )
+                    if not draft or draft == str(base.get("content", "")):
+                        raise ValueError("这次还没有足够的新电影感受可整理")
+                    current = self.app.store.create_reflection_version(
+                        account_id, movie_id, draft, "ai", "draft",
+                        int(base["version"]) if base.get("version") else None,
+                    )
+                    event_name = "reflection_draft_created"
+                elif action == "save":
+                    based_on = payload.get("based_on_version")
+                    current = self.app.store.create_reflection_version(
+                        account_id, movie_id, str(payload.get("content", "")),
+                        "ai_then_user" if based_on else "user", "confirmed",
+                        int(based_on) if based_on is not None else None,
+                    )
+                    event_name = "reflection_edited"
+                elif action in {"confirm", "lock", "unlock"}:
+                    bundle = self.app.store.set_reflection_status(
+                        account_id, movie_id, int(payload.get("version", 0)), action
+                    )
+                    current = bundle["current"] or {}
+                    event_name = {"confirm": "reflection_confirmed", "lock": "reflection_locked", "unlock": "reflection_unlocked"}[action]
+                else:
+                    self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+                    return
+            except (TypeError, ValueError) as error:
+                self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+            self.app.store.record_product_event(event_name, account_id, {"movie_id": movie_id, "version": current.get("version")})
+            self._json({"ok": True, **self.app.store.reflection_bundle(account_id, movie_id)})
             return
         if path == "/api/history":
             account_id = self._require_user()
@@ -272,10 +522,15 @@ class YingbanHandler(BaseHTTPRequestHandler):
                 self._json({"error": "movie not found"}, HTTPStatus.NOT_FOUND)
                 return
             try:
+                previous = self.app.store.get_movie_state(account_id, movie_id)
                 item = self.app.store.set_movie_state(account_id, movie_id, state, source)
             except ValueError as error:
                 self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
                 return
+            self.app.store.record_product_event(
+                "movie_state_changed" if previous else "movie_state_created",
+                account_id, {"movie_id": movie_id, "state": state, "source": source},
+            )
             self._json({"ok": True, "item": item})
             return
         if path == "/api/chat":
@@ -285,39 +540,56 @@ class YingbanHandler(BaseHTTPRequestHandler):
             self._chat(account_id, payload)
             return
         if path == "/api/voice/transcribe":
-            if not self._require_user():
+            account_id = self._require_user()
+            if not account_id:
                 return
             if self.app.voice is None:
                 self._json({"error": "语音服务不可用"}, HTTPStatus.SERVICE_UNAVAILABLE)
                 return
+            started = time.perf_counter()
             try:
                 encoded = str(payload.get("audio_base64", ""))
                 audio = base64.b64decode(encoded, validate=True)
                 text = self.app.voice.transcribe(audio, str(payload.get("mime_type", "audio/webm")))
             except (ValueError, RuntimeError, binascii.Error) as error:
+                self._record_voice_usage("stt", account_id, False, started, type(error).__name__)
+                self.app.store.record_product_event("voice_transcription_failed", account_id, {"error_category": type(error).__name__})
                 self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
                 return
             except Exception as error:  # noqa: BLE001
+                self._record_voice_usage("stt", account_id, False, started, type(error).__name__)
+                self.app.store.record_product_event("voice_transcription_failed", account_id, {"error_category": type(error).__name__})
                 LOG.warning("voice transcription failed: %s", type(error).__name__)
                 self._json({"error": "语音识别暂时不可用"}, HTTPStatus.BAD_GATEWAY)
                 return
+            self._record_voice_usage("stt", account_id, True, started)
+            self.app.store.record_product_event("voice_transcription_succeeded", account_id, {"characters": len(text)})
             self._json({"text": text})
             return
         if path == "/api/voice/synthesize":
-            if not self._require_user():
+            account_id = self._require_user()
+            if not account_id:
                 return
             if self.app.voice is None:
                 self._json({"error": "语音服务不可用"}, HTTPStatus.SERVICE_UNAVAILABLE)
                 return
+            started = time.perf_counter()
+            self.app.store.record_product_event("voice_reply_requested", account_id)
             try:
                 audio, content_type = self.app.voice.synthesize(str(payload.get("text", "")))
             except ValueError as error:
+                self._record_voice_usage("tts", account_id, False, started, type(error).__name__)
+                self.app.store.record_product_event("voice_reply_failed", account_id, {"error_category": type(error).__name__})
                 self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
                 return
             except Exception as error:  # noqa: BLE001
+                self._record_voice_usage("tts", account_id, False, started, type(error).__name__)
+                self.app.store.record_product_event("voice_reply_failed", account_id, {"error_category": type(error).__name__})
                 LOG.warning("voice synthesis failed: %s", type(error).__name__)
                 self._json({"error": "语音回复暂时不可用"}, HTTPStatus.BAD_GATEWAY)
                 return
+            self._record_voice_usage("tts", account_id, True, started)
+            self.app.store.record_product_event("voice_reply_succeeded", account_id, {"bytes": len(audio)})
             self._json(
                 {
                     "audio_base64": base64.b64encode(audio).decode("ascii"),
@@ -352,6 +624,16 @@ class YingbanHandler(BaseHTTPRequestHandler):
                 self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
                 return
             self._json({"ok": True, "model": model})
+            return
+        if path == "/api/admin/usage-pricing":
+            if not self._require_admin():
+                return
+            try:
+                pricing = self.app.store.save_usage_pricing(payload)
+            except ValueError as error:
+                self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+            self._json({"ok": True, "pricing": pricing})
             return
         if path == "/api/admin/agent-config/prompts":
             if not self._require_admin():
@@ -492,9 +774,14 @@ class YingbanHandler(BaseHTTPRequestHandler):
             )
         except InviteError as error:
             LOGIN_LIMITER.failure(remote)
+            self.app.store.record_product_event("login_failed", properties={"error_category": "invalid_invite"})
             self._json({"error": str(error)}, HTTPStatus.UNAUTHORIZED)
             return
         LOGIN_LIMITER.success(remote)
+        profile = self.app.store.account_profile(account_id)
+        if profile["onboarding_status"] == "not_started":
+            self.app.store.record_product_event("onboarding_started", account_id)
+        self.app.store.record_product_event("login_succeeded", account_id)
         cookie = self._cookie(USER_COOKIE, token, self.app.settings.session_days * 86400)
         self._json({"ok": True, "account": {"id_hint": account_id[-6:]}}, cookies=[cookie])
 
@@ -524,6 +811,11 @@ class YingbanHandler(BaseHTTPRequestHandler):
             history = []
         history = history[-20:]
         spoilers_allowed = bool(payload.get("spoilers_allowed", mode == "discussion"))
+        chat_started = time.perf_counter()
+        self.app.store.record_product_event(
+            "chat_turn_requested", account_id,
+            {"mode": mode, "has_selected_movie": bool(payload.get("selected_movie_id"))},
+        )
 
         if contains_identity_question(message):
             self._json(
@@ -587,6 +879,7 @@ class YingbanHandler(BaseHTTPRequestHandler):
 
         candidates: list[dict[str, Any]] = []
         if mode == "recommendation":
+            self.app.store.record_product_event("recommendation_requested", account_id)
             retrieval_request = message
             if any(phrase in message for phrase in ("看过了", "换一个", "换一部", "不喜欢")):
                 for item in reversed(history):
@@ -620,6 +913,10 @@ class YingbanHandler(BaseHTTPRequestHandler):
             reply = sanitize_agent_reply(reply)
         except Exception as error:  # noqa: BLE001
             LOG.exception("agent turn failed")
+            self.app.store.record_product_event(
+                "chat_turn_failed", account_id,
+                {"mode": mode, "latency_ms": round((time.perf_counter() - chat_started) * 1000), "error_category": type(error).__name__},
+            )
             self._json(
                 {
                     "error": "阿映暂时没能接上这句话，请稍后再试",
@@ -629,27 +926,19 @@ class YingbanHandler(BaseHTTPRequestHandler):
             )
             return
 
-        reflection_note = ""
-        reflection_updated = False
-        if mode == "discussion" and selected_movie is not None:
-            current_state = self.app.store.get_movie_state(account_id, selected_movie["id"]) or {}
-            existing_note = str(current_state.get("note") or "")
-            try:
-                reflection_note = self.app.agent.summarize_reflection(
-                    selected_movie,
-                    existing_note,
-                    history,
-                    message,
-                    reply,
-                )
-                if reflection_note and reflection_note != existing_note:
-                    self.app.store.save_movie_reflection(
-                        account_id, selected_movie["id"], reflection_note
-                    )
-                    reflection_updated = True
-            except Exception as error:  # noqa: BLE001
-                LOG.warning("reflection note update failed: %s", type(error).__name__)
-                reflection_note = existing_note
+        for movie in candidates:
+            self.app.store.record_product_event(
+                "recommendation_impression", account_id,
+                {"movie_id": movie["id"], "impression_id": movie.get("impression_id", "")},
+            )
+        self.app.store.record_product_event(
+            "chat_turn_succeeded", account_id,
+            {
+                "mode": mode,
+                "has_selected_movie": bool(selected_movie),
+                "latency_ms": round((time.perf_counter() - chat_started) * 1000),
+            },
+        )
 
         self._json(
             {
@@ -657,9 +946,69 @@ class YingbanHandler(BaseHTTPRequestHandler):
                 "selected_movie": public_movie(selected_movie) if selected_movie else None,
                 "recommendations": [public_movie(movie) for movie in candidates],
                 "memory_event": memory_event,
-                "reflection_note": reflection_note,
-                "reflection_updated": reflection_updated,
+                "reflection_note": "",
+                "reflection_updated": False,
+                "reflection_draft_available": bool(mode == "discussion" and selected_movie),
             }
+        )
+
+    def _onboarding_payload(self, account_id: str) -> dict[str, Any]:
+        profile = self.app.store.account_profile(account_id)
+        selected = self.app.store.onboarding_movies(account_id)
+        return {
+            "status": profile["onboarding_status"],
+            "selected_count": len(selected),
+            "required_count": 5,
+            "selected": [
+                {**public_movie(item), "sentiment": item["sentiment"]}
+                for item in selected
+            ],
+            "profile": profile if profile["onboarding_status"] == "completed" else None,
+        }
+
+    def _diverse_onboarding_candidates(self) -> list[dict[str, Any]]:
+        movies = self.app.store.all_movies()
+        selected: list[dict[str, Any]] = []
+        used_genres: dict[str, int] = {}
+        used_decades: dict[int, int] = {}
+        used_regions: dict[str, int] = {}
+        for movie in movies:
+            primary_genre = str((movie.get("genres") or [""])[0])
+            decade = int(movie.get("year", 0)) // 10 * 10
+            primary_region = str((movie.get("regions") or [""])[0])
+            if (
+                used_genres.get(primary_genre, 0) >= 3
+                or used_decades.get(decade, 0) >= 5
+                or used_regions.get(primary_region, 0) >= 6
+            ):
+                continue
+            selected.append(movie)
+            used_genres[primary_genre] = used_genres.get(primary_genre, 0) + 1
+            used_decades[decade] = used_decades.get(decade, 0) + 1
+            used_regions[primary_region] = used_regions.get(primary_region, 0) + 1
+            if len(selected) >= 24:
+                break
+        if len(selected) < 18:
+            existing = {item["id"] for item in selected}
+            selected.extend(item for item in movies if item["id"] not in existing)
+        return selected[:24]
+
+    def _record_voice_usage(
+        self,
+        operation: str,
+        account_id: str,
+        success: bool,
+        started: float,
+        error_category: str | None = None,
+    ) -> None:
+        if self.app.voice is None:
+            return
+        config = self.app.voice.config()
+        service_id = config.stt_model if operation == "stt" else config.tts_model
+        self.app.store.record_model_usage(
+            operation, config.provider, service_id, success,
+            round((time.perf_counter() - started) * 1000), account_id,
+            error_category=error_category,
         )
 
     def _serve_static(self, path: str) -> None:

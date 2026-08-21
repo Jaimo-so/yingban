@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="robots" content="noindex, nofollow">
     <title>影伴 · 管理后台</title>
-    <link rel="stylesheet" href="/styles.css?v=8">
-    <link rel="stylesheet" href="/admin.css?v=8">
+    <link rel="stylesheet" href="/styles.css?v=9">
+    <link rel="stylesheet" href="/admin.css?v=9">
   </head>
   <body class="admin-body">
     <header class="admin-topbar">
@@ -38,6 +38,7 @@
             <p>模型连接、角色提示词和账户入口都在这里管理，保存后立即生效。</p>
           </div>
           <nav class="section-nav" aria-label="配置中心导航">
+            <a href="#health-overview">产品健康</a>
             <a href="#agent-settings">模型与 Agent</a>
             <a href="#internet-settings">联网与影片</a>
             <a href="#voice-settings">语音</a>
@@ -45,6 +46,46 @@
             <a href="#invite-settings">邀请码</a>
           </nav>
         </div>
+
+        <section id="health-overview" class="admin-section">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">PRODUCT HEALTH</p>
+              <h2>产品健康概览</h2>
+              <p>只显示非敏感汇总：冷启动、推荐反馈、观后感状态、调用延迟与错误。这里不会出现聊天原文、观后感正文、录音或密钥。</p>
+            </div>
+            <button id="refresh-metrics" class="button button-secondary" type="button">刷新汇总</button>
+          </div>
+          <div id="metrics-grid" class="metrics-grid" aria-live="polite"></div>
+          <div class="config-card metrics-usage-card">
+            <h3>模型与第三方调用</h3>
+            <div class="admin-table-wrap">
+              <table>
+                <thead><tr><th>操作</th><th>调用</th><th>失败</th><th>平均延迟</th><th>估算成本</th></tr></thead>
+                <tbody id="metrics-usage-rows"></tbody>
+              </table>
+            </div>
+            <form id="usage-pricing-form" class="usage-pricing-form">
+              <div class="pricing-heading">
+                <div>
+                  <h4>成本价格表</h4>
+                  <p>金额单位为人民币。模型按每百万输入/输出单位计价，第三方服务按单次调用计价；保存后只影响后续事件。</p>
+                </div>
+                <label>价格版本<input id="pricing-version" maxlength="80" required placeholder="例如 2026-08-provider-a"></label>
+              </div>
+              <div class="pricing-grid">
+                <label>模型输入 / 百万单位<input id="pricing-model-input" type="number" min="0" step="0.000001" required></label>
+                <label>模型输出 / 百万单位<input id="pricing-model-output" type="number" min="0" step="0.000001" required></label>
+                <label>语音转文字 / 次<input id="pricing-stt-call" type="number" min="0" step="0.000001" required></label>
+                <label>文字转语音 / 次<input id="pricing-tts-call" type="number" min="0" step="0.000001" required></label>
+                <label>TMDB / 次<input id="pricing-tmdb-call" type="number" min="0" step="0.000001" required></label>
+                <label>网页搜索 / 次<input id="pricing-search-call" type="number" min="0" step="0.000001" required></label>
+                <label>网页读取 / 次<input id="pricing-reader-call" type="number" min="0" step="0.000001" required></label>
+              </div>
+              <div class="form-actions"><button class="button button-primary" type="submit">保存价格表</button></div>
+            </form>
+          </div>
+        </section>
 
         <section id="agent-settings" class="admin-section">
           <div class="section-heading">
@@ -348,6 +389,6 @@
     </main>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/admin.js?v=8" defer></script>
+    <script src="/admin.js?v=9" defer></script>
   </body>
 </html>

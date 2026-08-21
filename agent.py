@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -325,6 +326,7 @@ class BoundMovieTools:
             "source_url",
             "external_ids",
             "source",
+            "impression_id",
         )
         return {key: movie[key] for key in keys if key in movie}
 
@@ -482,7 +484,8 @@ class ModelMessageClient:
                     "input": arguments if isinstance(arguments, dict) else {},
                 }
             )
-        return {"content": content}
+        usage = raw.get("usage") if isinstance(raw.get("usage"), dict) else {}
+        return {"content": content, "usage": usage}
 
 
 class AgentRuntime:
@@ -715,8 +718,10 @@ class AgentRuntime:
             "existing_note": str(existing_note or "")[:1800],
             "conversation": bounded,
         }
-        response = ModelMessageClient(note_config).create(
-            """你是影伴的观后感笔记整理器。根据对话更新一份只属于这部电影的中文观后感笔记。
+        started = time.perf_counter()
+        try:
+            response = ModelMessageClient(note_config).create(
+                """你是影伴的观后感笔记整理器。根据对话更新一份只属于这部电影的中文观后感笔记。
 
 必须遵守：
 - 只记录用户明确表达的电影感受、判断、困惑、喜欢或不喜欢的角色/情节/主题，不猜测。
@@ -725,7 +730,21 @@ class AgentRuntime:
 - 使用中性、温和、便于用户以后回看的语气；可以使用“你”，不要冒充用户写第一人称日记。
 - 输出 80 至 500 个中文字符的纯文本，可分为 2 至 3 个短段落；不要标题、Markdown、URL 或项目符号。
 - 如果本轮没有任何可安全长期保存的电影感受，只输出：NO_UPDATE""",
-            [{"role": "user", "content": json.dumps(reflection_input, ensure_ascii=False)}],
+                [{"role": "user", "content": json.dumps(reflection_input, ensure_ascii=False)}],
+            )
+        except Exception as error:
+            self.store.record_model_usage(
+                "reflection", note_config.provider, note_config.model_id, False,
+                round((time.perf_counter() - started) * 1000),
+                error_category=type(error).__name__,
+            )
+            raise
+        usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
+        self.store.record_model_usage(
+            "reflection", note_config.provider, note_config.model_id, True,
+            round((time.perf_counter() - started) * 1000),
+            input_units=self._usage_value(usage, "input_tokens", "prompt_tokens"),
+            output_units=self._usage_value(usage, "output_tokens", "completion_tokens"),
         )
         text = "".join(
             str(block.get("text", ""))
@@ -752,17 +771,34 @@ class AgentRuntime:
             return self._demo_response(mode, message, selected_movie, spoilers_allowed, candidates)
 
         tools = BoundMovieTools(self.store, self.catalog, account_id, self.internet)
-        context = self._context(mode, selected_movie, spoilers_allowed, candidates)
+        profile = self.store.account_profile(account_id)
+        context = self._context(mode, selected_movie, spoilers_allowed, candidates, profile)
         system_prompt = self.prompts()[mode]
         messages = self._bounded_history(history)
         messages.append({"role": "user", "content": message})
         client = ModelMessageClient(config)
 
         for _turn in range(8):
-            response = client.create(
-                system_prompt + "\n\n" + context,
-                messages,
-                tools.definitions(),
+            started = time.perf_counter()
+            try:
+                response = client.create(
+                    system_prompt + "\n\n" + context,
+                    messages,
+                    tools.definitions(),
+                )
+            except Exception as error:
+                self.store.record_model_usage(
+                    "chat", config.provider, config.model_id, False,
+                    round((time.perf_counter() - started) * 1000), account_id,
+                    error_category=type(error).__name__,
+                )
+                raise
+            usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
+            self.store.record_model_usage(
+                "chat", config.provider, config.model_id, True,
+                round((time.perf_counter() - started) * 1000), account_id,
+                self._usage_value(usage, "input_tokens", "prompt_tokens"),
+                self._usage_value(usage, "output_tokens", "completion_tokens"),
             )
             content = response.get("content", [])
             tool_calls = [block for block in content if block.get("type") == "tool_use"]
@@ -804,11 +840,27 @@ class AgentRuntime:
         selected_movie: dict[str, Any] | None,
         spoilers_allowed: bool,
         candidates: list[dict[str, Any]],
+        profile: dict[str, Any] | None = None,
     ) -> str:
         lines = [
             f"当前模式：{'讨论电影' if mode == 'discussion' else '推荐电影'}。",
             f"剧透状态：{'用户允许完整剧透' if spoilers_allowed else '不要透露关键结局'}。",
         ]
+        if profile and profile.get("onboarding_status") == "completed":
+            visible_dimensions = [
+                item for item in profile.get("taste_dimensions", []) if not item.get("hidden")
+            ]
+            lines.append(
+                "用户可见且可修正的电影口味画像：" + json.dumps(
+                    {
+                        "summary": profile.get("taste_summary", ""),
+                        "version": profile.get("taste_version", 0),
+                        "dimensions": visible_dimensions[:8],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            lines.append("口味画像只用于电影理解；本轮明确请求优先，不得据此推断人格、心理、医疗或现实身份。")
         if selected_movie:
             lines.append("当前已确认影片：" + json.dumps(
                 BoundMovieTools._public_movie(selected_movie), ensure_ascii=False
@@ -822,6 +874,16 @@ class AgentRuntime:
             lines.append("本轮已经完成 recommend_movies 调用，不要再次调用该工具；只从这些候选中推荐，不要补造其他影片。")
             lines.append("候选海报由产品卡片单独展示；回复正文不要输出 poster_url、图片 URL、[海报](...) 或 Markdown 强调标记，只写片名和推荐理由。")
         return "\n".join(lines)
+
+    @staticmethod
+    def _usage_value(usage: dict[str, Any], *keys: str) -> int | None:
+        for key in keys:
+            try:
+                if usage.get(key) is not None:
+                    return int(usage[key])
+            except (TypeError, ValueError):
+                continue
+        return None
 
     @staticmethod
     def _demo_response(
