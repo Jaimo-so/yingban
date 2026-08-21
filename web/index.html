@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="影伴——记得你看过什么的 AI 电影伙伴。">
+    <title>影伴 · 你的电影搭子</title>
+    <script>
+      if (window.location.protocol === "file:") {
+        window.location.replace("http://127.0.0.1:8765/");
+      }
+    </script>
+    <link rel="stylesheet" href="/styles.css?v=8">
+  </head>
+  <body>
+    <div class="film-grain" aria-hidden="true"></div>
+
+    <main id="login-view" class="login-layout">
+      <section class="login-story" aria-labelledby="login-title">
+        <a class="brand brand-large" href="/" aria-label="影伴首页">
+          <span class="brand-mark" aria-hidden="true">映</span>
+          <span>影伴</span>
+        </a>
+        <div class="login-copy">
+          <p class="eyebrow">A FILM COMPANION</p>
+          <h1 id="login-title">电影散场以后，<br>还有话可以说。</h1>
+          <p>聊聊刚看完的那一部，或者让阿映替此刻的你找下一部。它会记住你看过什么，也不会把同一部片又推回来。</p>
+        </div>
+        <blockquote>“有时我们不是缺一部好电影，只是想找到一部适合现在的电影。”</blockquote>
+      </section>
+
+      <section class="login-panel" aria-label="邀请码登录">
+        <div class="login-card">
+          <div class="persona-lockup">
+            <span class="avatar avatar-large" aria-hidden="true">映</span>
+            <div>
+              <strong>阿映在等你</strong>
+              <span>用管理员发给你的邀请码进入</span>
+            </div>
+          </div>
+          <form id="login-form">
+            <label for="invite-code">邀请码</label>
+            <input id="invite-code" name="invite_code" autocomplete="current-password" spellcheck="false" placeholder="YB-XXXXX-XXXXX-XXXXX-XXXXX" required>
+            <p id="login-error" class="form-error" role="alert"></p>
+            <button class="button button-primary button-full" type="submit">
+              <span>进入影伴</span><span aria-hidden="true">→</span>
+            </button>
+          </form>
+          <p class="fine-print">邀请码就是你的登录凭证，请像保管密码一样保管它。</p>
+        </div>
+      </section>
+    </main>
+
+    <div id="app-shell" class="app-shell" hidden>
+      <header class="topbar">
+        <button id="brand-home" class="brand brand-button" type="button" aria-label="返回影伴首页">
+          <span class="brand-mark" aria-hidden="true">映</span>
+          <span>影伴</span>
+        </button>
+        <nav aria-label="主要导航">
+          <button class="nav-link is-active" data-nav="home" type="button">此刻</button>
+          <button class="nav-link" data-nav="history" type="button">我的电影 <span id="watched-count" class="count-badge">0</span></button>
+        </nav>
+        <div class="account-actions">
+          <span id="mode-badge" class="demo-badge" hidden>演示模式</span>
+          <button id="logout-button" class="icon-button" type="button" title="退出登录" aria-label="退出登录">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17l5-5-5-5M15 12H3M14 3h5a2 2 0 012 2v14a2 2 0 01-2 2h-5"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <main class="main-content">
+        <section id="home-view" class="view home-view">
+          <div class="home-intro">
+            <p class="eyebrow">今晚，想怎么和电影相处？</p>
+            <h1>我在。你从哪儿说起都行。</h1>
+            <p>不用组织成一篇影评，也不用先弄明白自己的心情。</p>
+          </div>
+
+          <div class="mode-grid">
+            <button id="discussion-card" class="mode-card mode-discussion" type="button">
+              <span class="mode-number">01</span>
+              <span class="mode-art" aria-hidden="true"><span class="screen-line"></span><span class="screen-glow"></span></span>
+              <span class="mode-copy">
+                <span class="mode-kicker">刚刚散场</span>
+                <strong>聊聊我看完的电影</strong>
+                <span>说说哪个人、哪个选择，或者哪种感觉一直没散。</span>
+              </span>
+              <span class="mode-arrow" aria-hidden="true">↗</span>
+            </button>
+
+            <button id="recommendation-card" class="mode-card mode-recommendation" type="button">
+              <span class="mode-number">02</span>
+              <span class="mode-art ticket-art" aria-hidden="true"><span></span><span></span><span></span></span>
+              <span class="mode-copy">
+                <span class="mode-kicker">下一部电影</span>
+                <strong>帮我找一部电影</strong>
+                <span>按口味、心情，或者最近放不下的一件事来找。</span>
+              </span>
+              <span class="mode-arrow" aria-hidden="true">↗</span>
+            </button>
+          </div>
+
+          <aside class="memory-note">
+            <span class="memory-icon" aria-hidden="true">✦</span>
+            <div>
+              <strong>阿映会记住看过的电影</strong>
+              <p>观后讨论和“这部看过了”会自动进入你的片单，之后不再重复推荐。</p>
+            </div>
+          </aside>
+        </section>
+
+        <section id="chat-view" class="view chat-view" hidden>
+          <div class="chat-header">
+            <button id="chat-back" class="text-button" type="button">← 返回</button>
+            <div>
+              <span id="chat-kicker" class="eyebrow">聊聊电影</span>
+              <h1 id="chat-title">刚看完哪一部？</h1>
+            </div>
+            <div class="chat-preferences">
+              <label id="spoiler-control" class="spoiler-control">
+                <input id="spoilers-allowed" type="checkbox" checked>
+                <span>可以聊剧透</span>
+              </label>
+              <button id="voice-autoplay-toggle" class="voice-autoplay-toggle" type="button" aria-pressed="true" aria-label="关闭 AI 语音自动播放">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 10v4h3l4 4V6l-4 4H5zM16 9a5 5 0 010 6M18.5 6.5a9 9 0 010 11"/></svg>
+                <span>自动播放</span>
+              </button>
+            </div>
+          </div>
+
+          <div id="chat-messages" class="chat-messages" aria-live="polite"></div>
+
+          <div class="composer-wrap">
+            <div id="prompt-chips" class="prompt-chips" aria-label="快捷开场"></div>
+            <form id="chat-form" class="composer">
+              <button id="voice-mode-button" class="composer-mode-button" type="button" aria-label="切换到语音输入" aria-pressed="false" aria-controls="text-composer voice-composer">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 00-3 3v6a3 3 0 006 0V6a3 3 0 00-3-3zM6 11v1a6 6 0 0012 0v-1M12 18v3M9 21h6"/></svg>
+              </button>
+              <span id="voice-availability-status" class="sr-only" role="status" aria-live="polite"></span>
+              <div id="text-composer" class="text-composer">
+                <label class="sr-only" for="chat-input">给阿映发消息</label>
+                <textarea id="chat-input" rows="1" maxlength="6000" placeholder="从片名或此刻的心情说起……" required></textarea>
+              </div>
+              <div id="voice-composer" class="voice-composer" hidden>
+                <button id="hold-to-talk" class="hold-to-talk" type="button" aria-describedby="voice-recording-status">按住说话</button>
+                <span id="voice-recording-status" class="voice-recording-status" role="status" aria-live="polite">松开发送，Esc 取消</span>
+              </div>
+              <button id="send-button" class="send-button" type="submit" aria-label="发送消息">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+              </button>
+            </form>
+            <p class="composer-note">阿映是 AI 电影伙伴；它不会把你的现实烦恼自动存进长期记忆。</p>
+          </div>
+        </section>
+
+        <section id="history-view" class="view history-view" hidden>
+          <div class="history-header">
+            <div>
+              <p class="eyebrow">你的电影轨迹</p>
+              <h1>我的电影</h1>
+              <p>这不是一份考勤表，只是让我们下次聊起时不会从头认识。</p>
+            </div>
+            <button id="add-movie-button" class="button button-secondary" type="button">＋ 添加电影</button>
+          </div>
+          <div class="history-tabs" role="tablist" aria-label="电影状态">
+            <button class="history-tab is-active" data-state="watched" role="tab" type="button">看过</button>
+            <button class="history-tab" data-state="watchlist" role="tab" type="button">想看</button>
+            <button class="history-tab" data-state="disliked" role="tab" type="button">不感兴趣</button>
+          </div>
+          <div id="history-grid" class="history-grid"></div>
+          <div id="history-empty" class="empty-state" hidden>
+            <span aria-hidden="true">◯</span>
+            <h2>这里还没有电影</h2>
+            <p>聊完一部，或者手动加进来，它就会留在这里。</p>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="movie-dialog" class="movie-dialog">
+      <form method="dialog" class="dialog-head">
+        <div><span class="eyebrow">加入你的片单</span><h2>找一部电影</h2></div>
+        <button class="icon-button" value="cancel" aria-label="关闭">×</button>
+      </form>
+      <form id="movie-search-form" class="movie-search">
+        <label class="sr-only" for="movie-search-input">搜索电影</label>
+        <input id="movie-search-input" placeholder="输入中文名、原名或别名" required>
+        <button class="button button-primary" type="submit">搜索</button>
+      </form>
+      <div id="movie-search-results" class="search-results"></div>
+    </dialog>
+
+    <dialog id="reflection-dialog" class="reflection-dialog" aria-labelledby="reflection-title">
+      <form method="dialog" class="dialog-head">
+        <div>
+          <span class="eyebrow">AFTER THE CREDITS</span>
+          <h2 id="reflection-title">观后感笔记</h2>
+        </div>
+        <button class="icon-button" value="cancel" aria-label="关闭观后感笔记">×</button>
+      </form>
+      <div class="reflection-content">
+        <div id="reflection-poster" class="reflection-poster" aria-hidden="true"></div>
+        <article class="reflection-paper">
+          <p id="reflection-meta" class="reflection-meta"></p>
+          <div id="reflection-note" class="reflection-note"></div>
+          <p id="reflection-empty" class="reflection-empty" hidden>还没有形成笔记。再聊几句你对这部电影的真实感受，阿映会替你整理在这里。</p>
+        </article>
+      </div>
+      <div class="reflection-actions">
+        <button id="reflection-continue" class="button button-primary" type="button">继续聊这部电影</button>
+      </div>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/app.js?v=8" defer></script>
+  </body>
+</html>
