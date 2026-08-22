@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 import secrets
 import sqlite3
 import string
@@ -158,6 +159,8 @@ class Store:
                     taste_generated_at TEXT,
                     auto_generate_reflection_drafts INTEGER NOT NULL DEFAULT 1
                         CHECK(auto_generate_reflection_drafts IN (0, 1)),
+                    weekly_recommendations_enabled INTEGER NOT NULL DEFAULT 1
+                        CHECK(weekly_recommendations_enabled IN (0, 1)),
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -203,6 +206,85 @@ class Store:
                     confirmed_at TEXT,
                     deleted_at TEXT,
                     UNIQUE(account_id, movie_id, version)
+                );
+
+                CREATE TABLE IF NOT EXISTS conversation_summaries (
+                    id TEXT PRIMARY KEY,
+                    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                    movie_id TEXT NOT NULL REFERENCES movies(id) ON DELETE CASCADE,
+                    summary TEXT NOT NULL,
+                    topics_json TEXT NOT NULL DEFAULT '[]',
+                    open_questions_json TEXT NOT NULL DEFAULT '[]',
+                    spoilers_allowed INTEGER NOT NULL DEFAULT 0
+                        CHECK(spoilers_allowed IN (0, 1)),
+                    consent_status TEXT NOT NULL DEFAULT 'active'
+                        CHECK(consent_status IN ('active', 'revoked')),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    deleted_at TEXT,
+                    UNIQUE(account_id, movie_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS weekly_recommendations (
+                    id TEXT PRIMARY KEY,
+                    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                    week_key TEXT NOT NULL,
+                    movie_ids_json TEXT NOT NULL DEFAULT '[]',
+                    reason_summary TEXT NOT NULL DEFAULT '',
+                    source_inputs_json TEXT NOT NULL DEFAULT '{}',
+                    status TEXT NOT NULL DEFAULT 'ready'
+                        CHECK(status IN ('ready', 'viewed', 'dismissed', 'expired')),
+                    created_at TEXT NOT NULL,
+                    viewed_at TEXT,
+                    expires_at TEXT NOT NULL,
+                    UNIQUE(account_id, week_key)
+                );
+
+                CREATE TABLE IF NOT EXISTS monthly_recaps (
+                    id TEXT PRIMARY KEY,
+                    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                    month_key TEXT NOT NULL,
+                    content_json TEXT NOT NULL DEFAULT '{}',
+                    source_movie_ids_json TEXT NOT NULL DEFAULT '[]',
+                    source_reflection_ids_json TEXT NOT NULL DEFAULT '[]',
+                    status TEXT NOT NULL DEFAULT 'draft'
+                        CHECK(status IN ('draft', 'confirmed', 'deleted')),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(account_id, month_key)
+                );
+
+                CREATE TABLE IF NOT EXISTS background_jobs (
+                    id TEXT PRIMARY KEY,
+                    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                    job_type TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'queued'
+                        CHECK(status IN ('queued', 'running', 'succeeded', 'failed', 'expired')),
+                    input_reference_json TEXT NOT NULL DEFAULT '{}',
+                    result_json TEXT NOT NULL DEFAULT '{}',
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    max_attempts INTEGER NOT NULL DEFAULT 2,
+                    available_at TEXT NOT NULL,
+                    error_category TEXT,
+                    created_at TEXT NOT NULL,
+                    started_at TEXT,
+                    finished_at TEXT,
+                    expires_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS share_cards (
+                    id TEXT PRIMARY KEY,
+                    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                    public_token TEXT NOT NULL UNIQUE,
+                    source_type TEXT NOT NULL
+                        CHECK(source_type IN ('reflection', 'monthly_recap', 'taste_dimension')),
+                    source_id TEXT NOT NULL,
+                    content_json TEXT NOT NULL DEFAULT '{}',
+                    status TEXT NOT NULL DEFAULT 'active'
+                        CHECK(status IN ('active', 'revoked', 'expired')),
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    revoked_at TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS product_events (
@@ -256,6 +338,16 @@ class Store:
                     ON recommendation_feedback(account_id, created_at);
                 CREATE INDEX IF NOT EXISTS idx_reflections_current
                     ON movie_reflections(account_id, movie_id, version DESC);
+                CREATE INDEX IF NOT EXISTS idx_conversation_summaries_account
+                    ON conversation_summaries(account_id, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_weekly_recommendations_account
+                    ON weekly_recommendations(account_id, week_key DESC);
+                CREATE INDEX IF NOT EXISTS idx_monthly_recaps_account
+                    ON monthly_recaps(account_id, month_key DESC);
+                CREATE INDEX IF NOT EXISTS idx_background_jobs_account
+                    ON background_jobs(account_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_share_cards_account
+                    ON share_cards(account_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_product_events_name_time
                     ON product_events(event_name, created_at);
                 CREATE INDEX IF NOT EXISTS idx_model_usage_operation_time
@@ -273,6 +365,17 @@ class Store:
             ):
                 if column not in movie_columns:
                     connection.execute(f"ALTER TABLE movies ADD COLUMN {column} {definition}")
+
+            profile_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(account_profiles)").fetchall()
+            }
+            if "weekly_recommendations_enabled" not in profile_columns:
+                connection.execute(
+                    "ALTER TABLE account_profiles ADD COLUMN "
+                    "weekly_recommendations_enabled INTEGER NOT NULL DEFAULT 1 "
+                    "CHECK(weekly_recommendations_enabled IN (0, 1))"
+                )
 
             # Stage nine migration: preserve every non-empty stage-eight note as a
             # confirmed first version. The NOT EXISTS guard makes startup idempotent.
@@ -344,11 +447,15 @@ class Store:
                 "taste_version": 0,
                 "taste_generated_at": None,
                 "auto_generate_reflection_drafts": True,
+                "weekly_recommendations_enabled": True,
             }
         result = dict(row)
         result["taste_dimensions"] = json.loads(result.pop("taste_dimensions_json") or "[]")
         result["auto_generate_reflection_drafts"] = bool(
             result["auto_generate_reflection_drafts"]
+        )
+        result["weekly_recommendations_enabled"] = bool(
+            result["weekly_recommendations_enabled"]
         )
         return result
 
@@ -568,6 +675,19 @@ class Store:
             connection.execute(
                 """UPDATE account_profiles
                    SET auto_generate_reflection_drafts = ?, updated_at = ?
+                   WHERE account_id = ?""",
+                (int(bool(enabled)), utc_now(), account_id),
+            )
+        return self.account_profile(account_id)
+
+    def set_weekly_recommendations_preference(
+        self, account_id: str, enabled: bool
+    ) -> dict[str, Any]:
+        with self.transaction(immediate=True) as connection:
+            self._ensure_profile(connection, account_id)
+            connection.execute(
+                """UPDATE account_profiles
+                   SET weekly_recommendations_enabled = ?, updated_at = ?
                    WHERE account_id = ?""",
                 (int(bool(enabled)), utc_now(), account_id),
             )
@@ -1156,6 +1276,459 @@ class Store:
                 item["reflection_updated_at"] = current["updated_at"]
         return items
 
+    def movie_states_page(
+        self, account_id: str, state: str | None, cursor: int = 0, limit: int = 12
+    ) -> dict[str, Any]:
+        safe_cursor = max(0, int(cursor))
+        safe_limit = max(1, min(int(limit), 50))
+        items = self.movie_states(account_id, state)
+        page = items[safe_cursor : safe_cursor + safe_limit]
+        next_cursor = safe_cursor + len(page)
+        return {
+            "items": page,
+            "total": len(items),
+            "cursor": safe_cursor,
+            "next_cursor": next_cursor if next_cursor < len(items) else None,
+        }
+
+    def follow_up_watchlist(
+        self, account_id: str, movie_id: str, action: str, reason_code: str | None = None
+    ) -> dict[str, Any]:
+        if action not in {"keep", "watched", "not_now", "not_interested"}:
+            raise ValueError("想看跟进操作无效")
+        current = self.get_movie_state(account_id, movie_id)
+        if current is None or current["state"] != "watchlist":
+            raise ValueError("这部电影不在当前想看列表")
+        if action == "keep":
+            item = current
+        elif action == "watched":
+            item = self.set_movie_state(account_id, movie_id, "watched", "watchlist_follow_up")
+        elif action == "not_interested":
+            item = self.set_movie_state(account_id, movie_id, "disliked", "watchlist_follow_up")
+        else:
+            with self.connect() as connection:
+                connection.execute(
+                    "DELETE FROM user_movie_states WHERE account_id = ? AND movie_id = ? AND state = 'watchlist'",
+                    (account_id, movie_id),
+                )
+            item = {"movie_id": movie_id, "state": None}
+        return {"action": action, "reason_code": reason_code, "item": item}
+
+    def conversation_summary(self, account_id: str, movie_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM conversation_summaries
+                   WHERE account_id = ? AND movie_id = ?
+                     AND consent_status = 'active' AND deleted_at IS NULL""",
+                (account_id, movie_id),
+            ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["topics"] = json.loads(result.pop("topics_json") or "[]")
+        result["open_questions"] = json.loads(result.pop("open_questions_json") or "[]")
+        result["spoilers_allowed"] = bool(result["spoilers_allowed"])
+        return result
+
+    def save_conversation_summary(
+        self,
+        account_id: str,
+        movie_id: str,
+        summary: str,
+        topics: list[str],
+        open_questions: list[str],
+        spoilers_allowed: bool,
+    ) -> dict[str, Any]:
+        clean_summary = str(summary).strip()
+        clean_topics = [str(item).strip()[:120] for item in topics if str(item).strip()][:12]
+        clean_questions = [str(item).strip()[:240] for item in open_questions if str(item).strip()][:8]
+        if not 1 <= len(clean_summary) <= 2000:
+            raise ValueError("电影会话摘要必须在 1 到 2000 个字符之间")
+        combined = "\n".join([clean_summary, *clean_topics, *clean_questions])
+        prohibited_patterns = (
+            r"\b1[3-9]\d{9}\b",
+            r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}",
+            r"(?:我的|我在|我被|我已)(?:学校|公司|单位|住址|地址|电话|手机号|微信|邮箱|病历|诊断|确诊|治疗)",
+            r"(?:我想自杀|我不想活|我要伤害自己)",
+        )
+        if any(re.search(pattern, combined, flags=re.IGNORECASE) for pattern in prohibited_patterns):
+            raise ValueError("电影会话摘要只能保留电影讨论内容，请移除联系方式或现实敏感经历")
+        if self.movie(movie_id) is None:
+            raise ValueError("电影不存在")
+        now = utc_now()
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO conversation_summaries (
+                       id, account_id, movie_id, summary, topics_json,
+                       open_questions_json, spoilers_allowed, consent_status,
+                       created_at, updated_at, deleted_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NULL)
+                   ON CONFLICT(account_id, movie_id) DO UPDATE SET
+                       summary = excluded.summary,
+                       topics_json = excluded.topics_json,
+                       open_questions_json = excluded.open_questions_json,
+                       spoilers_allowed = excluded.spoilers_allowed,
+                       consent_status = 'active', updated_at = excluded.updated_at,
+                       deleted_at = NULL""",
+                (
+                    "conv_" + secrets.token_hex(8), account_id, movie_id, clean_summary,
+                    json.dumps(clean_topics, ensure_ascii=False),
+                    json.dumps(clean_questions, ensure_ascii=False),
+                    int(bool(spoilers_allowed)), now, now,
+                ),
+            )
+        return self.conversation_summary(account_id, movie_id) or {}
+
+    def delete_conversation_summary(self, account_id: str, movie_id: str) -> bool:
+        now = utc_now()
+        with self.connect() as connection:
+            result = connection.execute(
+                """UPDATE conversation_summaries
+                   SET summary = '', topics_json = '[]', open_questions_json = '[]',
+                       consent_status = 'revoked', deleted_at = ?, updated_at = ?
+                   WHERE account_id = ? AND movie_id = ? AND deleted_at IS NULL""",
+                (now, now, account_id, movie_id),
+            )
+        return result.rowcount > 0
+
+    @staticmethod
+    def current_week_key() -> str:
+        iso = datetime.now(UTC).date().isocalendar()
+        return f"{iso.year}-W{iso.week:02d}"
+
+    def weekly_recommendation(
+        self, account_id: str, week_key: str | None = None, mark_viewed: bool = False
+    ) -> dict[str, Any] | None:
+        key = week_key or self.current_week_key()
+        now = utc_now()
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM weekly_recommendations WHERE account_id = ? AND week_key = ?",
+                (account_id, key),
+            ).fetchone()
+            if row and mark_viewed and row["status"] == "ready":
+                connection.execute(
+                    "UPDATE weekly_recommendations SET status = 'viewed', viewed_at = ? WHERE id = ?",
+                    (now, row["id"]),
+                )
+                row = connection.execute(
+                    "SELECT * FROM weekly_recommendations WHERE id = ?", (row["id"],)
+                ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        movie_ids = json.loads(result.pop("movie_ids_json") or "[]")
+        result["movies"] = [movie for movie_id in movie_ids if (movie := self.movie(str(movie_id)))]
+        result["source_inputs"] = json.loads(result.pop("source_inputs_json") or "{}")
+        return result
+
+    def save_weekly_recommendation(
+        self,
+        account_id: str,
+        movies: list[dict[str, Any]],
+        reason_summary: str,
+        source_inputs: dict[str, Any],
+        *,
+        replace: bool = False,
+    ) -> dict[str, Any]:
+        key = self.current_week_key()
+        now_dt = datetime.now(UTC)
+        expires = (now_dt + timedelta(days=8)).isoformat()
+        movie_ids = [str(movie["id"]) for movie in movies[:3]]
+        if any(movie_id in self.watched_ids(account_id) for movie_id in movie_ids):
+            raise ValueError("本周建议不能包含已看电影")
+        existing = self.weekly_recommendation(account_id, key)
+        if existing and not replace:
+            return existing
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO weekly_recommendations (
+                       id, account_id, week_key, movie_ids_json, reason_summary,
+                       source_inputs_json, status, created_at, viewed_at, expires_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, 'ready', ?, NULL, ?)
+                   ON CONFLICT(account_id, week_key) DO UPDATE SET
+                       movie_ids_json = excluded.movie_ids_json,
+                       reason_summary = excluded.reason_summary,
+                       source_inputs_json = excluded.source_inputs_json,
+                       status = 'ready', viewed_at = NULL, expires_at = excluded.expires_at""",
+                (
+                    "week_" + secrets.token_hex(8), account_id, key,
+                    json.dumps(movie_ids, ensure_ascii=False), str(reason_summary)[:500],
+                    json.dumps(source_inputs, ensure_ascii=False), now_dt.isoformat(), expires,
+                ),
+            )
+        return self.weekly_recommendation(account_id, key) or {}
+
+    def dismiss_weekly_recommendation(self, account_id: str, *, permanently: bool = False) -> None:
+        key = self.current_week_key()
+        with self.transaction(immediate=True) as connection:
+            connection.execute(
+                "UPDATE weekly_recommendations SET status = 'dismissed' WHERE account_id = ? AND week_key = ?",
+                (account_id, key),
+            )
+            if permanently:
+                self._ensure_profile(connection, account_id)
+                connection.execute(
+                    "UPDATE account_profiles SET weekly_recommendations_enabled = 0, updated_at = ? WHERE account_id = ?",
+                    (utc_now(), account_id),
+                )
+
+    def generate_monthly_recap(self, account_id: str, month_key: str) -> dict[str, Any]:
+        try:
+            datetime.strptime(month_key, "%Y-%m")
+        except ValueError as error:
+            raise ValueError("月份必须使用 YYYY-MM") from error
+        prefix = month_key + "%"
+        with self.connect() as connection:
+            state_rows = connection.execute(
+                """SELECT ums.movie_id, ums.state, m.title_zh, m.themes_json
+                   FROM user_movie_states ums JOIN movies m ON m.id = ums.movie_id
+                   WHERE ums.account_id = ? AND ums.updated_at LIKE ?
+                   ORDER BY ums.updated_at, ums.movie_id""",
+                (account_id, prefix),
+            ).fetchall()
+            reflection_rows = connection.execute(
+                """SELECT mr.id, mr.movie_id, mr.version, mr.content, m.title_zh, m.themes_json
+                   FROM movie_reflections mr JOIN movies m ON m.id = mr.movie_id
+                   WHERE mr.account_id = ? AND mr.status IN ('confirmed', 'locked')
+                     AND COALESCE(mr.confirmed_at, mr.updated_at) LIKE ?
+                   ORDER BY mr.updated_at, mr.id""",
+                (account_id, prefix),
+            ).fetchall()
+        movies = [dict(row) for row in state_rows]
+        reflections = [dict(row) for row in reflection_rows]
+        theme_sources: dict[str, list[str]] = {}
+        for row in reflections:
+            for theme in json.loads(row.pop("themes_json") or "[]"):
+                theme_sources.setdefault(str(theme), []).append(str(row["id"]))
+        themes = [
+            {"label": theme, "source_reflection_ids": ids}
+            for theme, ids in sorted(theme_sources.items(), key=lambda item: (-len(item[1]), item[0]))
+            if len(ids) >= 1
+        ][:5]
+        content = {
+            "month": month_key,
+            "watched": [
+                {"movie_id": row["movie_id"], "title": row["title_zh"]}
+                for row in movies if row["state"] == "watched"
+            ],
+            "watchlist": [
+                {"movie_id": row["movie_id"], "title": row["title_zh"]}
+                for row in movies if row["state"] == "watchlist"
+            ],
+            "confirmed_reflections": [
+                {"reflection_id": row["id"], "movie_id": row["movie_id"], "title": row["title_zh"]}
+                for row in reflections
+            ],
+            "themes": themes,
+            "next_direction": "",
+        }
+        movie_ids = list(dict.fromkeys(str(row["movie_id"]) for row in movies))
+        reflection_ids = [str(row["id"]) for row in reflections]
+        now = utc_now()
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO monthly_recaps (
+                       id, account_id, month_key, content_json, source_movie_ids_json,
+                       source_reflection_ids_json, status, created_at, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?)
+                   ON CONFLICT(account_id, month_key) DO UPDATE SET
+                       content_json = excluded.content_json,
+                       source_movie_ids_json = excluded.source_movie_ids_json,
+                       source_reflection_ids_json = excluded.source_reflection_ids_json,
+                       status = 'draft', updated_at = excluded.updated_at""",
+                (
+                    "recap_" + secrets.token_hex(8), account_id, month_key,
+                    json.dumps(content, ensure_ascii=False), json.dumps(movie_ids),
+                    json.dumps(reflection_ids), now, now,
+                ),
+            )
+        return self.monthly_recap(account_id, month_key) or {}
+
+    def monthly_recap(self, account_id: str, month_key: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM monthly_recaps WHERE account_id = ? AND month_key = ? AND status != 'deleted'",
+                (account_id, month_key),
+            ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["content"] = json.loads(result.pop("content_json") or "{}")
+        result["source_movie_ids"] = json.loads(result.pop("source_movie_ids_json") or "[]")
+        result["source_reflection_ids"] = json.loads(result.pop("source_reflection_ids_json") or "[]")
+        return result
+
+    def confirm_monthly_recap(
+        self, account_id: str, month_key: str, next_direction: str = ""
+    ) -> dict[str, Any]:
+        recap = self.monthly_recap(account_id, month_key)
+        if recap is None:
+            raise ValueError("请先生成月度回顾草稿")
+        content = recap["content"]
+        content["next_direction"] = str(next_direction).strip()[:300]
+        with self.connect() as connection:
+            connection.execute(
+                """UPDATE monthly_recaps SET content_json = ?, status = 'confirmed', updated_at = ?
+                   WHERE id = ? AND account_id = ?""",
+                (json.dumps(content, ensure_ascii=False), utc_now(), recap["id"], account_id),
+            )
+        return self.monthly_recap(account_id, month_key) or {}
+
+    def create_share_card(
+        self,
+        account_id: str,
+        source_type: str,
+        source_id: str,
+        content: dict[str, Any],
+        expires_days: int = 7,
+    ) -> dict[str, Any]:
+        if source_type not in {"reflection", "monthly_recap", "taste_dimension"}:
+            raise ValueError("分享内容类型无效")
+        days = max(1, min(int(expires_days), 30))
+        now = datetime.now(UTC)
+        card_id = "share_" + secrets.token_hex(8)
+        token = secrets.token_urlsafe(24)
+        safe_content = json.loads(json.dumps(content, ensure_ascii=False))
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO share_cards (
+                       id, account_id, public_token, source_type, source_id,
+                       content_json, status, created_at, expires_at, revoked_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, NULL)""",
+                (
+                    card_id, account_id, token, source_type, source_id,
+                    json.dumps(safe_content, ensure_ascii=False), now.isoformat(),
+                    (now + timedelta(days=days)).isoformat(),
+                ),
+            )
+        return self.share_card_for_account(account_id, card_id) or {}
+
+    def share_card_for_account(self, account_id: str, card_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM share_cards WHERE id = ? AND account_id = ?",
+                (card_id, account_id),
+            ).fetchone()
+        return self._decode_share_card(row)
+
+    def public_share_card(self, token: str) -> dict[str, Any] | None:
+        now = utc_now()
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM share_cards
+                   WHERE public_token = ? AND status = 'active' AND expires_at > ?""",
+                (token, now),
+            ).fetchone()
+        result = self._decode_share_card(row)
+        if result:
+            result.pop("account_id", None)
+            result.pop("public_token", None)
+        return result
+
+    @staticmethod
+    def _decode_share_card(row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        result = dict(row)
+        result["content"] = json.loads(result.pop("content_json") or "{}")
+        return result
+
+    def revoke_share_card(self, account_id: str, card_id: str) -> bool:
+        with self.connect() as connection:
+            result = connection.execute(
+                """UPDATE share_cards SET status = 'revoked', revoked_at = ?
+                   WHERE id = ? AND account_id = ? AND status = 'active'""",
+                (utc_now(), card_id, account_id),
+            )
+        return result.rowcount > 0
+
+    def create_background_job(
+        self,
+        account_id: str,
+        job_type: str,
+        input_reference: dict[str, Any],
+        *,
+        max_attempts: int = 2,
+        expires_minutes: int = 30,
+    ) -> dict[str, Any]:
+        now = datetime.now(UTC)
+        job_id = "job_" + secrets.token_hex(8)
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO background_jobs (
+                       id, account_id, job_type, status, input_reference_json,
+                       result_json, attempt_count, max_attempts, available_at,
+                       error_category, created_at, started_at, finished_at, expires_at
+                   ) VALUES (?, ?, ?, 'queued', ?, '{}', 0, ?, ?, NULL, ?, NULL, NULL, ?)""",
+                (
+                    job_id, account_id, str(job_type)[:80],
+                    json.dumps(input_reference, ensure_ascii=False), max(1, min(max_attempts, 5)),
+                    now.isoformat(), now.isoformat(),
+                    (now + timedelta(minutes=max(1, expires_minutes))).isoformat(),
+                ),
+            )
+        return self.background_job(account_id, job_id) or {}
+
+    def background_job(self, account_id: str, job_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM background_jobs WHERE id = ? AND account_id = ?",
+                (job_id, account_id),
+            ).fetchone()
+            if (
+                row is not None
+                and row["status"] in {"queued", "running"}
+                and str(row["expires_at"]) <= utc_now()
+            ):
+                connection.execute(
+                    """UPDATE background_jobs
+                       SET status = 'expired', finished_at = ?, error_category = 'Expired'
+                       WHERE id = ? AND account_id = ? AND status IN ('queued', 'running')""",
+                    (utc_now(), job_id, account_id),
+                )
+                row = connection.execute(
+                    "SELECT * FROM background_jobs WHERE id = ? AND account_id = ?",
+                    (job_id, account_id),
+                ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["input_reference"] = json.loads(result.pop("input_reference_json") or "{}")
+        result["result"] = json.loads(result.pop("result_json") or "{}")
+        return result
+
+    def update_background_job(
+        self,
+        account_id: str,
+        job_id: str,
+        status: str,
+        *,
+        result: dict[str, Any] | None = None,
+        error_category: str | None = None,
+    ) -> dict[str, Any]:
+        if status not in {"running", "succeeded", "failed", "expired"}:
+            raise ValueError("后台任务状态无效")
+        now = utc_now()
+        started_at = now if status == "running" else None
+        finished_at = now if status in {"succeeded", "failed", "expired"} else None
+        with self.connect() as connection:
+            update = connection.execute(
+                """UPDATE background_jobs
+                   SET status = ?, result_json = ?, error_category = ?,
+                       attempt_count = attempt_count + CASE WHEN ? = 'running' THEN 1 ELSE 0 END,
+                       started_at = COALESCE(started_at, ?),
+                       finished_at = CASE WHEN ? IS NULL THEN finished_at ELSE ? END
+                   WHERE id = ? AND account_id = ?""",
+                (
+                    status, json.dumps(result or {}, ensure_ascii=False), error_category,
+                    status, started_at, finished_at, finished_at, job_id, account_id,
+                ),
+            )
+        if update.rowcount == 0:
+            raise ValueError("后台任务不存在")
+        return self.background_job(account_id, job_id) or {}
+
     def watched_ids(self, account_id: str) -> set[str]:
         with self.connect() as connection:
             rows = connection.execute(
@@ -1330,6 +1903,28 @@ class Store:
                 ),
             )
 
+    def recent_product_event_count(
+        self,
+        account_id: str,
+        event_name: str,
+        *,
+        since: datetime,
+    ) -> int:
+        """Count one account's named events after a UTC boundary.
+
+        The query deliberately uses the privacy-safe product event stream rather
+        than adding a second, feature-specific rate-limit store.
+        """
+        boundary = since.astimezone(UTC).isoformat()
+        with self.connect() as connection:
+            return int(
+                connection.execute(
+                    """SELECT COUNT(*) FROM product_events
+                       WHERE account_id = ? AND event_name = ? AND created_at >= ?""",
+                    (account_id, str(event_name)[:100], boundary),
+                ).fetchone()[0]
+            )
+
     def record_model_usage(
         self,
         operation: str,
@@ -1440,6 +2035,27 @@ class Store:
                 """SELECT status, COUNT(*) AS count FROM movie_reflections
                    GROUP BY status ORDER BY status"""
             ).fetchall()
+            conversation_rows = connection.execute(
+                """SELECT CASE WHEN deleted_at IS NULL THEN 'active' ELSE 'deleted' END AS status,
+                          COUNT(*) AS count
+                   FROM conversation_summaries GROUP BY status"""
+            ).fetchall()
+            weekly_rows = connection.execute(
+                """SELECT status, COUNT(*) AS count FROM weekly_recommendations
+                   GROUP BY status ORDER BY status"""
+            ).fetchall()
+            recap_rows = connection.execute(
+                """SELECT status, COUNT(*) AS count FROM monthly_recaps
+                   GROUP BY status ORDER BY status"""
+            ).fetchall()
+            job_rows = connection.execute(
+                """SELECT status, COUNT(*) AS count FROM background_jobs
+                   GROUP BY status ORDER BY status"""
+            ).fetchall()
+            share_rows = connection.execute(
+                """SELECT status, COUNT(*) AS count FROM share_cards
+                   GROUP BY status ORDER BY status"""
+            ).fetchall()
         return {
             "accounts": accounts,
             "onboarding": {str(row["onboarding_status"]): int(row["count"]) for row in onboarding_rows},
@@ -1449,6 +2065,23 @@ class Store:
                 "feedback": {str(row["action"]): int(row["count"]) for row in feedback_rows},
             },
             "reflections": {str(row["status"]): int(row["count"]) for row in reflection_rows},
+            "continuity": {
+                "conversation_summaries": {
+                    str(row["status"]): int(row["count"]) for row in conversation_rows
+                },
+                "weekly_recommendations": {
+                    str(row["status"]): int(row["count"]) for row in weekly_rows
+                },
+                "monthly_recaps": {
+                    str(row["status"]): int(row["count"]) for row in recap_rows
+                },
+                "background_jobs": {
+                    str(row["status"]): int(row["count"]) for row in job_rows
+                },
+                "share_cards": {
+                    str(row["status"]): int(row["count"]) for row in share_rows
+                },
+            },
             "usage": [dict(row) for row in usage_rows],
             "pricing": self.usage_pricing(),
         }

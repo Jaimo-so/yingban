@@ -6,20 +6,28 @@ import json
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 
 PRODUCT_DIR = Path(__file__).resolve().parents[1]
 if str(PRODUCT_DIR) not in sys.path:
     sys.path.insert(0, str(PRODUCT_DIR))
 
-from agent import AgentRuntime  # noqa: E402
+from agent import AgentRuntime, ModelMessageClient  # noqa: E402
 from catalog import MovieCatalog  # noqa: E402
 from integrations import InternetRuntime  # noqa: E402
-from server import AppContext, YingbanHTTPServer, sanitize_agent_reply  # noqa: E402
+from server import (  # noqa: E402
+    AppContext,
+    YingbanHTTPServer,
+    has_reflection_signal,
+    sanitize_agent_reply,
+)
 from settings import Settings  # noqa: E402
 from storage import InviteError, Store  # noqa: E402
 from voice import VoiceRuntime  # noqa: E402
@@ -260,7 +268,257 @@ class StageNineProductTests(ProductFixture):
         self.assertEqual(metrics["pricing"]["version"], "test-pricing-v1")
 
 
+class StageTenProductTests(ProductFixture):
+    def test_short_explicit_movie_reactions_are_valid_reflection_signals(self) -> None:
+        self.assertTrue(has_reflection_signal(["还好"]))
+        self.assertTrue(has_reflection_signal(["感觉一般"]))
+        self.assertFalse(has_reflection_signal(["是的", "好的"]))
+
+    def account(self) -> str:
+        code = self.store.generate_invites(1)[0]
+        account_id, _ = self.store.login_with_invite(code, 30)
+        return account_id
+
+    def test_conversation_summary_requires_consent_data_and_is_independent_from_reflection(self) -> None:
+        account_id = self.account()
+        movie_id = self.store.all_movies()[0]["id"]
+        self.store.set_movie_state(account_id, movie_id, "watched", "test")
+        reflection = self.store.create_reflection_version(
+            account_id, movie_id, "这是用户确认要留下的电影观后感。", "user", "confirmed"
+        )
+        summary = self.store.save_conversation_summary(
+            account_id, movie_id, "我们聊到结尾的选择，还没有形成一致理解。",
+            ["结尾", "人物选择"], ["这个选择是否改变了人物？"], True,
+        )
+        self.assertTrue(summary["spoilers_allowed"])
+        self.assertEqual(summary["topics"], ["结尾", "人物选择"])
+        with self.assertRaises(ValueError):
+            self.store.save_conversation_summary(
+                account_id,
+                movie_id,
+                "我的手机号是 13800138000，想把现实经历也存进去。",
+                [],
+                [],
+                False,
+            )
+        self.assertTrue(self.store.delete_conversation_summary(account_id, movie_id))
+        self.assertIsNone(self.store.conversation_summary(account_id, movie_id))
+        self.assertEqual(
+            self.store.reflection_bundle(account_id, movie_id)["current"]["id"], reflection["id"]
+        )
+
+    def test_weekly_recommendation_is_unique_per_week_and_hard_excludes_watched(self) -> None:
+        account_id = self.account()
+        watched, candidate = self.store.all_movies()[:2]
+        self.store.set_movie_state(account_id, watched["id"], "watched", "test")
+        with self.assertRaises(ValueError):
+            self.store.save_weekly_recommendation(account_id, [watched], "不应保存", {})
+        first = self.store.save_weekly_recommendation(
+            account_id, [candidate], "来自想看列表", {"types": ["watchlist"]}
+        )
+        second = self.store.save_weekly_recommendation(
+            account_id, self.store.all_movies()[2:3], "不会每次刷新重做", {}
+        )
+        self.assertEqual(first["id"], second["id"])
+        self.assertEqual(first["movies"][0]["id"], candidate["id"])
+        self.store.dismiss_weekly_recommendation(account_id, permanently=True)
+        self.assertEqual(self.store.weekly_recommendation(account_id)["status"], "dismissed")
+        self.assertFalse(self.store.account_profile(account_id)["weekly_recommendations_enabled"])
+
+    def test_watchlist_follow_up_keeps_temporary_and_persistent_meanings_distinct(self) -> None:
+        account_id = self.account()
+        first, second = self.store.all_movies()[:2]
+        self.store.set_movie_state(account_id, first["id"], "watchlist", "test")
+        result = self.store.follow_up_watchlist(account_id, first["id"], "not_now")
+        self.assertIsNone(result["item"]["state"])
+        self.assertNotIn(first["id"], self.store.persistently_excluded_ids(account_id))
+        self.store.set_movie_state(account_id, second["id"], "watchlist", "test")
+        self.store.follow_up_watchlist(account_id, second["id"], "not_interested", "direction_changed")
+        self.assertIn(second["id"], self.store.persistently_excluded_ids(account_id))
+
+    def test_monthly_recap_uses_only_current_account_and_confirmed_reflections(self) -> None:
+        first = self.account()
+        second = self.account()
+        movie = self.store.all_movies()[0]
+        self.store.set_movie_state(first, movie["id"], "watched", "test")
+        self.store.create_reflection_version(first, movie["id"], "第一账户确认的观后感。", "user", "confirmed")
+        self.store.create_reflection_version(first, movie["id"], "尚未确认的 AI 草稿。", "ai", "draft")
+        month = datetime.now(UTC).strftime("%Y-%m")
+        recap = self.store.generate_monthly_recap(first, month)
+        self.assertEqual(len(recap["content"]["watched"]), 1)
+        self.assertEqual(len(recap["source_reflection_ids"]), 1)
+        self.assertIsNone(self.store.monthly_recap(second, month))
+        confirmed = self.store.confirm_monthly_recap(first, month, "下个月继续看科幻电影")
+        self.assertEqual(confirmed["status"], "confirmed")
+
+    def test_share_card_is_random_expiring_revocable_and_public_payload_has_no_account(self) -> None:
+        account_id = self.account()
+        card = self.store.create_share_card(
+            account_id, "taste_dimension", "genre:科幻",
+            {"title": "我的电影口味", "text": "我喜欢科幻电影。", "attribution": "由影伴 AI 协助整理"},
+            7,
+        )
+        self.assertGreaterEqual(len(card["public_token"]), 24)
+        public = self.store.public_share_card(card["public_token"])
+        self.assertNotIn("account_id", public)
+        self.assertNotIn("public_token", public)
+        self.assertTrue(self.store.revoke_share_card(account_id, card["id"]))
+        self.assertIsNone(self.store.public_share_card(card["public_token"]))
+
+    def test_background_job_stores_only_references_and_is_account_isolated(self) -> None:
+        first = self.account()
+        second = self.account()
+        job = self.store.create_background_job(
+            first, "reflection", {"movie_id": self.store.all_movies()[0]["id"]}
+        )
+        self.assertIsNone(self.store.background_job(second, job["id"]))
+        running = self.store.update_background_job(first, job["id"], "running")
+        self.assertEqual(running["attempt_count"], 1)
+        done = self.store.update_background_job(
+            first, job["id"], "succeeded", result={"version": 1}
+        )
+        self.assertEqual(done["result"], {"version": 1})
+        self.assertNotIn("content", json.dumps(done["input_reference"]))
+        metrics = self.store.metrics_summary()
+        self.assertEqual(metrics["continuity"]["background_jobs"]["succeeded"], 1)
+
+        expiring = self.store.create_background_job(first, "poster_hydration", {"movie_ids": []})
+        with self.store.connect() as connection:
+            connection.execute(
+                "UPDATE background_jobs SET expires_at = ? WHERE id = ?",
+                ((datetime.now(UTC) - timedelta(seconds=1)).isoformat(), expiring["id"]),
+            )
+        self.assertEqual(
+            self.store.background_job(first, expiring["id"])["status"], "expired"
+        )
+
+    def test_recent_event_count_supports_persistent_weekly_refresh_limit(self) -> None:
+        account_id = self.account()
+        for _ in range(3):
+            self.store.record_product_event(
+                "weekly_recommendation_refreshed", account_id, {"movie_count": 3}
+            )
+        self.assertEqual(
+            self.store.recent_product_event_count(
+                account_id,
+                "weekly_recommendation_refreshed",
+                since=datetime.now(UTC) - timedelta(hours=1),
+            ),
+            3,
+        )
+
+    def test_history_pagination_is_stable_and_reports_total(self) -> None:
+        account_id = self.account()
+        movies = self.store.all_movies()[:5]
+        for movie in movies:
+            self.store.set_movie_state(account_id, movie["id"], "watched", "test")
+        first = self.store.movie_states_page(account_id, "watched", 0, 2)
+        second = self.store.movie_states_page(account_id, "watched", first["next_cursor"], 2)
+        self.assertEqual(first["total"], 5)
+        self.assertEqual(len(first["items"]), 2)
+        self.assertFalse(
+            {item["movie_id"] for item in first["items"]}
+            & {item["movie_id"] for item in second["items"]}
+        )
+
+    def test_stage_ten_ui_exposes_local_retention_background_jobs_and_user_controls(self) -> None:
+        html = (PRODUCT_DIR / "web" / "index.html").read_text(encoding="utf-8")
+        script = (PRODUCT_DIR / "web" / "app.js").read_text(encoding="utf-8")
+        styles = (PRODUCT_DIR / "web" / "styles.css").read_text(encoding="utf-8")
+        share_html = (PRODUCT_DIR / "web" / "share.html").read_text(encoding="utf-8")
+        share_script = (PRODUCT_DIR / "web" / "share-card.js").read_text(encoding="utf-8")
+        self.assertIn('id="weekly-card"', html)
+        self.assertIn('id="conversation-summary-dialog"', html)
+        self.assertIn('id="monthly-recap-dialog"', html)
+        self.assertIn('id="share-revoke"', html)
+        self.assertIn("生成精美分享卡", html)
+        self.assertIn("retentionMs: 7 * 24 * 60 * 60 * 1000", script)
+        self.assertIn('storage: "local-browser"', script)
+        self.assertIn('/api/jobs/voice', script)
+        self.assertIn("async: true", script)
+        self.assertIn("正在生成分享卡…", script)
+        self.assertIn("window.location.assign(data.share_path)", script)
+        self.assertIn('/share-card.js?v=12', share_html)
+        self.assertIn('class="share-back-button" href="/"', share_html)
+        self.assertIn("返回影伴", share_html)
+        self.assertIn("share-film-grid", share_script)
+        self.assertIn("visual.movies", share_script)
+        self.assertIn(".reflection-paper .inline-check input", styles)
+        self.assertIn("flex: 0 0 16px", styles)
+        self.assertIn("width: fit-content", styles)
+
+    def test_stage_eleven_discussion_entry_is_new_and_history_restore_is_explicit(self) -> None:
+        html = (PRODUCT_DIR / "web" / "index.html").read_text(encoding="utf-8")
+        script = (PRODUCT_DIR / "web" / "app.js").read_text(encoding="utf-8")
+        styles = (PRODUCT_DIR / "web" / "styles.css").read_text(encoding="utf-8")
+        self.assertIn('id="chat-history-button"', html)
+        self.assertIn('id="conversation-history-dialog"', html)
+        self.assertIn('id="conversation-history-delete-dialog"', html)
+        self.assertIn('prefix: "yingban.conversation.v2."', script)
+        self.assertIn('legacyPrefix: "yingban.chatDraft.v1."', script)
+        self.assertIn("migrateLegacyDrafts()", script)
+        self.assertIn("const restored = options.conversation || null", script)
+        self.assertIn("restored?.id || localConversationStore.newId()", script)
+        self.assertIn('openChat("discussion", conversation.movie || null, { conversation })', script)
+        self.assertIn("history: state.chatHistory.slice(-40)", script)
+        self.assertIn("value?.movie?.title_zh", script)
+        self.assertIn("conversation-history-item", styles)
+        self.assertIn("conversation-history-actions", styles)
+
+
 class AgentConfigurationTests(ProductFixture):
+    def test_reflection_keeps_early_short_user_feedback_without_using_ai_as_evidence(self) -> None:
+        runtime = AgentRuntime(self.settings, self.store, self.catalog)
+        runtime.save_model_config(
+            {
+                "provider": "openai_compatible",
+                "api_key": "sk-reflection-test",
+                "model_id": "reflection-test-model",
+                "base_url": "https://models.example.com/v1",
+                "timeout_seconds": 30,
+                "max_tokens": 1200,
+                "temperature": 0.4,
+            }
+        )
+        history = [
+            {"role": "assistant", "content": "你对《流浪地球》的整体感受怎么样？"},
+            {"role": "user", "content": "还行"},
+        ] + [
+            {"role": "assistant" if index % 2 else "user", "content": f"后来转到其他话题 {index}"}
+            for index in range(28)
+        ]
+        captured: dict[str, Any] = {}
+
+        def fake_create(
+            _client: ModelMessageClient,
+            system: str,
+            messages: list[dict[str, Any]],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> dict[str, Any]:
+            captured["system"] = system
+            captured["input"] = json.loads(messages[0]["content"])
+            self.assertIsNone(tools)
+            return {
+                "content": [{"type": "text", "text": "你觉得《流浪地球》整体还行，没有特别强烈的感受。"}],
+                "usage": {},
+            }
+
+        with patch.object(ModelMessageClient, "create", autospec=True, side_effect=fake_create):
+            draft = runtime.summarize_reflection(
+                self.store.movie("cn-wandering-earth-2019") or {},
+                "",
+                history,
+                "后来聊到另一部电影",
+                "这是阿映的观点，不能写成用户观点。",
+            )
+
+        context = captured["input"]["conversation_context"]
+        self.assertIn({"role": "user", "content": "还行"}, context)
+        self.assertLessEqual(len(context), 24)
+        self.assertIn("只有 `role=user` 的文字是用户观感证据", captured["system"])
+        self.assertIn("20 至 500 个中文字符", captured["system"])
+        self.assertIn("整体还行", draft)
+
     def test_model_configuration_is_persistent_and_secret_is_masked(self) -> None:
         runtime = AgentRuntime(self.settings, self.store, self.catalog)
         saved = runtime.save_model_config(
@@ -681,6 +939,137 @@ class HTTPFlowTests(ProductFixture):
         self.assertEqual(feedback["feedback"]["movie_id"], movie["id"])
         history = self.request("/api/history?state=watchlist")
         self.assertEqual(history["items"][0]["movie_id"], movie["id"])
+
+    def test_stage_ten_http_continuity_weekly_follow_up_recap_and_share_flow(self) -> None:
+        self.login()
+        account_id = self.store.list_invites()[0]["account_id"]
+        movie_id = "us-interstellar-2014"
+        self.request(
+            "/api/history", "POST",
+            {"movie_id": movie_id, "state": "watched", "source": "test"},
+        )
+        saved = self.request(
+            f"/api/conversations/{movie_id}/summary", "POST",
+            {
+                "summary": "我们聊到结尾与父女关系，还想继续讨论人物选择。",
+                "topics": ["结尾", "父女关系"],
+                "open_questions": ["结尾的选择意味着什么？"],
+                "spoilers_allowed": True,
+            },
+        )
+        self.assertEqual(saved["summary"]["movie_id"], movie_id)
+        self.assertIsNotNone(self.request(f"/api/conversations/{movie_id}/summary")["summary"])
+
+        watchlist_movie = "jp-spirited-away-2001"
+        self.request(
+            "/api/history", "POST",
+            {"movie_id": watchlist_movie, "state": "watchlist", "source": "test"},
+        )
+        weekly = self.request("/api/weekly-recommendation")
+        self.assertNotIn(movie_id, {movie["id"] for movie in weekly["recommendation"]["movies"]})
+        followed = self.request(
+            f"/api/watchlist/{watchlist_movie}/follow-up", "POST", {"action": "not_now"}
+        )
+        self.assertIsNone(followed["item"]["state"])
+
+        reflection = self.store.create_reflection_version(
+            account_id, movie_id, "这是一份由当前账户确认、可选择分享的电影观后感。", "user", "confirmed"
+        )
+        card = self.request(
+            "/api/share-cards", "POST",
+            {"source_type": "reflection", "source_id": movie_id, "text": reflection["content"]},
+        )["card"]
+        public = self.request(f"/api/public/share-cards/{card['public_token']}")
+        self.assertNotIn("account_id", public["card"])
+        self.assertTrue(self.request(f"/api/share-cards/{card['id']}", "DELETE")["ok"])
+
+        month = datetime.now(UTC).strftime("%Y-%m")
+        self.request(f"/api/recaps/monthly/{month}/generate", "POST", {})
+        self.request(
+            f"/api/recaps/monthly/{month}/confirm", "POST",
+            {"next_direction": "下个月继续沿着科幻与亲情的方向看下去"},
+        )
+        monthly_card = self.request(
+            "/api/share-cards", "POST",
+            {"source_type": "monthly_recap", "source_id": month, "expires_days": 7},
+        )["card"]
+        visual = monthly_card["content"]["visual"]
+        self.assertEqual(visual["variant"], "monthly_recap")
+        self.assertEqual(visual["movie_count"], 1)
+        self.assertEqual(visual["movies"][0]["title"], "星际穿越")
+        self.assertIn("poster_url", visual["movies"][0])
+        self.assertIn("和 1 部电影", visual["story_title"])
+        monthly_public = self.request(
+            f"/api/public/share-cards/{monthly_card['public_token']}"
+        )["card"]
+        self.assertEqual(monthly_public["content"]["visual"]["movies"][0]["title"], "星际穿越")
+        self.assertTrue(self.request(f"/api/conversations/{movie_id}/summary", "DELETE")["ok"])
+
+    def test_stage_ten_weekly_refresh_limit_and_background_retry(self) -> None:
+        self.login()
+        for index in range(3):
+            result = self.request(
+                "/api/weekly-recommendation/refresh",
+                "POST",
+                {"direction": f"第 {index + 1} 次换一批"},
+            )
+            self.assertEqual(result["status"], "ready")
+        with self.assertRaises(urllib.error.HTTPError) as blocked:
+            self.request(
+                "/api/weekly-recommendation/refresh",
+                "POST",
+                {"direction": "超过每小时限制"},
+            )
+        self.assertEqual(blocked.exception.code, 429)
+        blocked.exception.close()
+
+        self.request(
+            "/api/weekly-recommendation/dismiss", "POST", {"permanently": True}
+        )
+        with self.assertRaises(urllib.error.HTTPError) as disabled:
+            self.request(
+                "/api/weekly-recommendation/refresh",
+                "POST",
+                {"direction": "停用后不能绕过设置直接刷新"},
+            )
+        self.assertEqual(disabled.exception.code, 409)
+        disabled.exception.close()
+
+        self.request(
+            "/api/history",
+            "POST",
+            {"movie_id": "us-interstellar-2014", "state": "watched", "source": "test"},
+        )
+
+        attempts = 0
+
+        def flaky_summary(*_args: object, **_kwargs: object) -> str:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("temporary test failure")
+            return "第二次尝试后成功整理出的观后感草稿。"
+
+        self.server.app.agent.summarize_reflection = flaky_summary  # type: ignore[method-assign]
+        created = self.request(
+            "/api/reflections/us-interstellar-2014/generate",
+            "POST",
+            {
+                "async": True,
+                "history": [
+                    {"role": "user", "content": "这部电影让我重新想了很久亲情和时间的关系。"}
+                ],
+            },
+        )
+        job_id = created["job"]["id"]
+        job = created["job"]
+        for _ in range(50):
+            job = self.request(f"/api/jobs/{job_id}")["job"]
+            if job["status"] in {"succeeded", "failed"}:
+                break
+            time.sleep(0.01)
+        self.assertEqual(job["status"], "succeeded")
+        self.assertEqual(job["attempt_count"], 2)
 
     def test_replacement_recommendation_keeps_previous_intent(self) -> None:
         self.login()

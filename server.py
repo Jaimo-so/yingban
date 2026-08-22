@@ -10,11 +10,12 @@ import re
 import threading
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qs, unquote, urlparse
 
 from agent import AgentRuntime, BoundMovieTools
@@ -64,6 +65,8 @@ class LoginLimiter:
 
 
 LOGIN_LIMITER = LoginLimiter()
+EPHEMERAL_AUDIO: dict[str, tuple[float, bytes, str]] = {}
+EPHEMERAL_AUDIO_LOCK = threading.Lock()
 
 
 def cookie_value(headers: Any, name: str) -> str | None:
@@ -103,6 +106,22 @@ def sanitize_agent_reply(text: str) -> str:
     return cleaned.strip()
 
 
+SHORT_REFLECTION_SIGNALS = (
+    "喜欢", "不喜欢", "还好", "还行", "一般", "不错", "不好看", "好看",
+    "无聊", "没感觉", "有意思", "失望", "感动", "打动", "难受", "遗憾",
+    "震撼", "看不懂", "不清楚", "推荐", "不推荐", "害怕", "温暖", "压抑",
+)
+
+
+def has_reflection_signal(messages: list[str]) -> bool:
+    """Accept concise explicit movie reactions without treating bare assent as a note."""
+    for message in messages:
+        compact = re.sub(r"\s+", "", str(message))
+        if len(compact) >= 12 or any(signal in compact for signal in SHORT_REFLECTION_SIGNALS):
+            return True
+    return False
+
+
 def contains_identity_question(text: str) -> bool:
     compact = text.replace(" ", "").lower()
     return any(
@@ -140,6 +159,16 @@ def movie_query_from_message(text: str) -> str:
     return text.strip()[:120]
 
 
+def compact_voice_text(text: str, full: bool = False) -> str:
+    clean = re.sub(r"\s+", " ", str(text)).strip()
+    if full or len(clean) <= 140:
+        return clean
+    boundary = max(clean.rfind(mark, 0, 141) for mark in ("。", "！", "？", "；"))
+    if boundary >= 70:
+        return clean[: boundary + 1]
+    return clean[:140].rstrip("，、；： ") + "。"
+
+
 class YingbanHandler(BaseHTTPRequestHandler):
     server_version = "Yingban/0.1"
 
@@ -166,6 +195,32 @@ class YingbanHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/conversations/") and parsed.path.endswith("/summary"):
+            account_id = self._require_user()
+            if not account_id:
+                return
+            movie_id = unquote(
+                parsed.path.removeprefix("/api/conversations/").removesuffix("/summary")
+            ).strip("/")
+            removed = self.app.store.delete_conversation_summary(account_id, movie_id)
+            if removed:
+                self.app.store.record_product_event(
+                    "conversation_summary_deleted", account_id, {"movie_id": movie_id}
+                )
+            self._json({"ok": removed})
+            return
+        if parsed.path.startswith("/api/share-cards/"):
+            account_id = self._require_user()
+            if not account_id:
+                return
+            card_id = unquote(parsed.path.removeprefix("/api/share-cards/"))
+            removed = self.app.store.revoke_share_card(account_id, card_id)
+            if removed:
+                self.app.store.record_product_event(
+                    "share_card_revoked", account_id, {"share_card_id": card_id}
+                )
+            self._json({"ok": removed})
+            return
         if parsed.path.startswith("/api/onboarding/movies/"):
             account_id = self._require_user()
             if not account_id:
@@ -235,8 +290,78 @@ class YingbanHandler(BaseHTTPRequestHandler):
                     "reflection_preferences": {
                         "auto_generate_drafts": profile["auto_generate_reflection_drafts"]
                     },
+                    "weekly_recommendations": {
+                        "enabled": profile["weekly_recommendations_enabled"]
+                    },
                 }
             )
+            return
+
+        if path.startswith("/api/public/share-cards/"):
+            token = unquote(path.removeprefix("/api/public/share-cards/"))
+            card = self.app.store.public_share_card(token)
+            if card is None:
+                self._json({"error": "分享不存在、已撤回或已过期"}, HTTPStatus.NOT_FOUND)
+                return
+            self._json({"card": card})
+            return
+
+        if path.startswith("/api/conversations/") and path.endswith("/summary"):
+            account_id = self._require_user()
+            if not account_id:
+                return
+            movie_id = unquote(
+                path.removeprefix("/api/conversations/").removesuffix("/summary")
+            ).strip("/")
+            movie = self.app.store.movie(movie_id)
+            if movie is None:
+                self._json({"error": "movie not found"}, HTTPStatus.NOT_FOUND)
+                return
+            self._json(
+                {
+                    "movie": public_movie(movie),
+                    "summary": self.app.store.conversation_summary(account_id, movie_id),
+                }
+            )
+            return
+
+        if path == "/api/weekly-recommendation":
+            account_id = self._require_user()
+            if not account_id:
+                return
+            self._json(self._weekly_recommendation_payload(account_id, mark_viewed=True))
+            return
+
+        if path.startswith("/api/recaps/monthly/"):
+            account_id = self._require_user()
+            if not account_id:
+                return
+            month_key = unquote(path.removeprefix("/api/recaps/monthly/"))
+            recap = self.app.store.monthly_recap(account_id, month_key)
+            self._json({"recap": recap, "empty": recap is None})
+            return
+
+        if path.startswith("/api/jobs/"):
+            account_id = self._require_user()
+            if not account_id:
+                return
+            job_id = unquote(path.removeprefix("/api/jobs/"))
+            job = self.app.store.background_job(account_id, job_id)
+            if job is None:
+                self._json({"error": "后台任务不存在"}, HTTPStatus.NOT_FOUND)
+                return
+            if job["status"] == "succeeded" and job["job_type"] == "voice":
+                with EPHEMERAL_AUDIO_LOCK:
+                    cached = EPHEMERAL_AUDIO.get(job_id)
+                    if cached and cached[0] > time.time():
+                        job["result"] = {
+                            **job["result"],
+                            "audio_base64": base64.b64encode(cached[1]).decode("ascii"),
+                            "content_type": cached[2],
+                        }
+                    else:
+                        job["result"] = {**job["result"], "audio_available": False}
+            self._json({"job": job})
             return
 
         if path == "/api/onboarding":
@@ -295,10 +420,21 @@ class YingbanHandler(BaseHTTPRequestHandler):
             if state not in {None, "watched", "watchlist", "disliked"}:
                 self._json({"error": "invalid state"}, HTTPStatus.BAD_REQUEST)
                 return
-            items = self.app.store.movie_states(account_id, state)
-            if state == "watched" and self.app.internet is not None:
-                items = self.app.internet.hydrate_movie_posters(items, limit=5)
-            self._json({"items": items})
+            try:
+                cursor = int(query.get("cursor", ["0"])[0])
+                limit = int(query.get("limit", ["12"])[0])
+            except ValueError:
+                self._json({"error": "invalid pagination"}, HTTPStatus.BAD_REQUEST)
+                return
+            page = self.app.store.movie_states_page(account_id, state, cursor, limit)
+            missing = [item["movie_id"] for item in page["items"] if not item.get("poster_url")][:5]
+            if missing and self.app.internet is not None:
+                job = self.app.store.create_background_job(
+                    account_id, "poster_hydration", {"movie_ids": missing}
+                )
+                page["poster_job_id"] = job["id"]
+                self._start_poster_job(account_id, job["id"], missing)
+            self._json(page)
             return
 
         if path == "/api/movies":
@@ -428,6 +564,178 @@ class YingbanHandler(BaseHTTPRequestHandler):
             )
             self._json({"ok": True, "auto_generate_drafts": profile["auto_generate_reflection_drafts"]})
             return
+        if path == "/api/weekly-recommendation/preferences":
+            account_id = self._require_user()
+            if not account_id:
+                return
+            enabled = bool(payload.get("enabled", True))
+            profile = self.app.store.set_weekly_recommendations_preference(account_id, enabled)
+            self.app.store.record_product_event(
+                "weekly_recommendation_preference_changed", account_id, {"enabled": enabled}
+            )
+            self._json({"ok": True, "enabled": profile["weekly_recommendations_enabled"]})
+            return
+        if path.startswith("/api/conversations/") and path.endswith("/summary"):
+            account_id = self._require_user()
+            if not account_id:
+                return
+            movie_id = unquote(
+                path.removeprefix("/api/conversations/").removesuffix("/summary")
+            ).strip("/")
+            try:
+                summary = self.app.store.save_conversation_summary(
+                    account_id,
+                    movie_id,
+                    str(payload.get("summary", "")),
+                    payload.get("topics", []) if isinstance(payload.get("topics"), list) else [],
+                    payload.get("open_questions", [])
+                    if isinstance(payload.get("open_questions"), list)
+                    else [],
+                    bool(payload.get("spoilers_allowed", False)),
+                )
+            except ValueError as error:
+                self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+            self.app.store.record_product_event(
+                "conversation_summary_saved", account_id, {"movie_id": movie_id}
+            )
+            self._json({"ok": True, "summary": summary})
+            return
+        if path == "/api/weekly-recommendation/refresh":
+            account_id = self._require_user()
+            if not account_id:
+                return
+            if not self.app.store.account_profile(account_id)["weekly_recommendations_enabled"]:
+                self._json(
+                    {"error": "本周建议已停用，请先在连续性设置中重新开启"},
+                    HTTPStatus.CONFLICT,
+                )
+                return
+            refreshes = self.app.store.recent_product_event_count(
+                account_id,
+                "weekly_recommendation_refreshed",
+                since=datetime.now(UTC) - timedelta(hours=1),
+            )
+            if refreshes >= 3:
+                self._json(
+                    {"error": "每小时最多换一批 3 次，稍后再试", "retry_after_seconds": 3600},
+                    HTTPStatus.TOO_MANY_REQUESTS,
+                )
+                return
+            direction = str(payload.get("direction", "")).strip()[:300]
+            recommendation = self._generate_weekly_recommendation(
+                account_id, direction=direction, replace=True
+            )
+            self.app.store.record_product_event(
+                "weekly_recommendation_refreshed", account_id,
+                {"has_direction": bool(direction), "movie_count": len(recommendation.get("movies", []))},
+            )
+            self._json({"status": "ready", "recommendation": recommendation})
+            return
+        if path == "/api/weekly-recommendation/dismiss":
+            account_id = self._require_user()
+            if not account_id:
+                return
+            permanently = bool(payload.get("permanently", False))
+            self.app.store.dismiss_weekly_recommendation(account_id, permanently=permanently)
+            self.app.store.record_product_event(
+                "weekly_recommendation_dismissed", account_id, {"permanently": permanently}
+            )
+            self._json({"ok": True, "permanently": permanently})
+            return
+        if path.startswith("/api/watchlist/") and path.endswith("/follow-up"):
+            account_id = self._require_user()
+            if not account_id:
+                return
+            movie_id = unquote(
+                path.removeprefix("/api/watchlist/").removesuffix("/follow-up")
+            ).strip("/")
+            try:
+                result = self.app.store.follow_up_watchlist(
+                    account_id, movie_id, str(payload.get("action", "")),
+                    str(payload.get("reason_code", "")) or None,
+                )
+            except ValueError as error:
+                self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+            self.app.store.record_product_event(
+                "watchlist_follow_up", account_id,
+                {"movie_id": movie_id, "action": result["action"], "reason_code": result["reason_code"]},
+            )
+            self._json({"ok": True, **result})
+            return
+        if path.startswith("/api/recaps/monthly/"):
+            account_id = self._require_user()
+            if not account_id:
+                return
+            suffix = path.removeprefix("/api/recaps/monthly/")
+            parts = [unquote(part) for part in suffix.split("/") if part]
+            if len(parts) != 2 or parts[1] not in {"generate", "confirm"}:
+                self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+                return
+            try:
+                if parts[1] == "generate":
+                    recap = self.app.store.generate_monthly_recap(account_id, parts[0])
+                    event_name = "monthly_recap_generated"
+                else:
+                    recap = self.app.store.confirm_monthly_recap(
+                        account_id, parts[0], str(payload.get("next_direction", ""))
+                    )
+                    event_name = "monthly_recap_confirmed"
+            except ValueError as error:
+                self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+            self.app.store.record_product_event(event_name, account_id, {"month": parts[0]})
+            self._json({"ok": True, "recap": recap})
+            return
+        if path == "/api/share-cards":
+            account_id = self._require_user()
+            if not account_id:
+                return
+            try:
+                source_type = str(payload.get("source_type", ""))
+                source_id = str(payload.get("source_id", ""))
+                content = self._validated_share_content(account_id, source_type, source_id, payload)
+                source_id = str(payload.get("source_id", source_id))
+                card = self.app.store.create_share_card(
+                    account_id, source_type, source_id, content,
+                    int(payload.get("expires_days", 7)),
+                )
+            except (TypeError, ValueError) as error:
+                self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+            self.app.store.record_product_event(
+                "share_card_created", account_id,
+                {"share_card_id": card["id"], "source_type": source_type},
+            )
+            self._json(
+                {
+                    "ok": True,
+                    "card": card,
+                    "share_path": f"/share?token={card['public_token']}",
+                },
+                HTTPStatus.CREATED,
+            )
+            return
+        if path == "/api/jobs/voice":
+            account_id = self._require_user()
+            if not account_id:
+                return
+            if self.app.voice is None:
+                self._json({"error": "语音服务不可用"}, HTTPStatus.SERVICE_UNAVAILABLE)
+                return
+            text_value = str(payload.get("text", "")).strip()
+            full = bool(payload.get("full", False))
+            if not text_value:
+                self._json({"error": "没有可朗读的文字"}, HTTPStatus.BAD_REQUEST)
+                return
+            job = self.app.store.create_background_job(
+                account_id, "voice", {"mode": "full" if full else "summary", "characters": len(text_value)},
+                expires_minutes=10,
+            )
+            self._start_voice_job(account_id, job["id"], text_value, full)
+            self._json({"job": job}, HTTPStatus.ACCEPTED)
+            return
         if path.startswith("/api/recommendations/") and path.endswith("/feedback"):
             account_id = self._require_user()
             if not account_id:
@@ -461,6 +769,22 @@ class YingbanHandler(BaseHTTPRequestHandler):
             if self.app.store.movie(movie_id) is None:
                 self._json({"error": "movie not found"}, HTTPStatus.NOT_FOUND)
                 return
+            if action == "generate" and payload.get("async"):
+                history = payload.get("history", []) if isinstance(payload.get("history"), list) else []
+                job = self.app.store.create_background_job(
+                    account_id,
+                    "reflection",
+                    {"movie_id": movie_id, "history_items": len(history)},
+                    expires_minutes=20,
+                )
+                self._start_reflection_job(
+                    account_id, job["id"], movie_id, history, bool(payload.get("regenerate"))
+                )
+                self.app.store.record_product_event(
+                    "reflection_job_created", account_id, {"movie_id": movie_id, "job_id": job["id"]}
+                )
+                self._json({"job": job}, HTTPStatus.ACCEPTED)
+                return
             try:
                 if action == "generate":
                     bundle = self.app.store.reflection_bundle(account_id, movie_id)
@@ -470,15 +794,15 @@ class YingbanHandler(BaseHTTPRequestHandler):
                         str(item.get("content", "")).strip() for item in history
                         if isinstance(item, dict) and item.get("role") == "user"
                     ]
-                    if not any(len(message) >= 12 for message in user_messages) and payload.get("regenerate") and base.get("content"):
+                    if not has_reflection_signal(user_messages) and payload.get("regenerate") and base.get("content"):
                         user_messages = [str(base["content"])]
                         history = [{"role": "user", "content": str(base["content"])}]
-                    if not any(len(message) >= 12 for message in user_messages):
+                    if not has_reflection_signal(user_messages):
                         raise ValueError("还需要至少一句更具体的电影感受，才能整理草稿")
                     self.app.store.record_product_event("reflection_requested", account_id, {"movie_id": movie_id})
                     draft = self.app.agent.summarize_reflection(
                         self.app.store.movie(movie_id) or {}, str(base.get("content", "")),
-                        history[:-2], user_messages[-1],
+                        history, user_messages[-1],
                         next((str(item.get("content", "")) for item in reversed(history) if isinstance(item, dict) and item.get("role") == "assistant"), ""),
                     )
                     if not draft or draft == str(base.get("content", "")):
@@ -966,6 +1290,324 @@ class YingbanHandler(BaseHTTPRequestHandler):
             "profile": profile if profile["onboarding_status"] == "completed" else None,
         }
 
+    def _weekly_recommendation_payload(
+        self, account_id: str, *, mark_viewed: bool = False
+    ) -> dict[str, Any]:
+        profile = self.app.store.account_profile(account_id)
+        if not profile["weekly_recommendations_enabled"]:
+            return {"status": "disabled", "recommendation": None}
+        existing = self.app.store.weekly_recommendation(account_id, mark_viewed=mark_viewed)
+        if existing:
+            return {"status": existing["status"], "recommendation": existing}
+        watchlist = self.app.store.movie_states(account_id, "watchlist")
+        visible_dimensions = [
+            item for item in profile.get("taste_dimensions", []) if not item.get("hidden")
+        ]
+        if not watchlist and not visible_dimensions:
+            return {"status": "needs_input", "recommendation": None}
+        recommendation = self._generate_weekly_recommendation(account_id)
+        if mark_viewed:
+            recommendation = self.app.store.weekly_recommendation(account_id, mark_viewed=True) or recommendation
+        self.app.store.record_product_event(
+            "weekly_recommendation_generated", account_id,
+            {"movie_count": len(recommendation.get("movies", []))},
+        )
+        return {"status": recommendation.get("status", "ready"), "recommendation": recommendation}
+
+    def _generate_weekly_recommendation(
+        self, account_id: str, *, direction: str = "", replace: bool = False
+    ) -> dict[str, Any]:
+        watchlist = [
+            item for item in self.app.store.movie_states(account_id, "watchlist")
+            if item["movie_id"] not in self.app.store.watched_ids(account_id)
+        ]
+        movies = watchlist[:3]
+        source_types: list[str] = []
+        source_movie_ids: list[str] = []
+        if movies:
+            source_types.append("watchlist")
+            source_movie_ids.extend(str(item["movie_id"]) for item in movies)
+        if len(movies) < 3:
+            request = direction or "为本周挑一部符合我已确认电影口味、适合近期观看的电影"
+            candidates = self.app.catalog.recommend(account_id, request, limit=3)
+            existing_ids = {str(item["id"]) for item in movies}
+            movies.extend(item for item in candidates if str(item["id"]) not in existing_ids)
+            movies = movies[:3]
+            source_types.append("taste_profile" if not direction else "explicit_direction")
+        if not movies:
+            raise ValueError("还没有足够数据生成本周建议，请先说说这周想看什么")
+        reason = (
+            "优先从你的想看列表里挑选，并结合这周想换的方向。"
+            if direction and watchlist
+            else "优先从你的想看列表里挑选，再用已确认的电影口味补足。"
+            if watchlist
+            else "根据已确认的电影口味整理；你可以随时换个方向。"
+        )
+        return self.app.store.save_weekly_recommendation(
+            account_id,
+            movies,
+            reason,
+            {
+                "types": source_types,
+                "movie_ids": source_movie_ids,
+                "has_explicit_direction": bool(direction),
+            },
+            replace=replace,
+        )
+
+    def _validated_share_content(
+        self,
+        account_id: str,
+        source_type: str,
+        source_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        preview = str(payload.get("text", "")).strip()
+        if source_type == "reflection":
+            bundle = self.app.store.reflection_bundle(account_id, source_id)
+            source = bundle.get("confirmed")
+            if not source or source["status"] not in {"confirmed", "locked"}:
+                raise ValueError("只能分享已确认或已锁定的观后感")
+            movie = self.app.store.movie(source_id)
+            if movie is None:
+                raise ValueError("电影不存在")
+            body = preview or str(source["content"])
+            title = f"《{movie['title_zh']}》观后感"
+            stable_source_id = str(source["id"])
+        elif source_type == "monthly_recap":
+            recap = self.app.store.monthly_recap(account_id, source_id)
+            if not recap or recap["status"] != "confirmed":
+                raise ValueError("只能分享已确认的月度电影回顾")
+            content = recap["content"]
+            movies: list[dict[str, Any]] = []
+            for item in content.get("watched", []):
+                movie_id = str(item.get("movie_id", ""))
+                movie = self.app.store.movie(movie_id) if movie_id else None
+                movies.append({
+                    "id": movie_id,
+                    "title": str((movie or {}).get("title_zh") or item.get("title") or "未命名电影"),
+                    "original_title": str((movie or {}).get("title_original") or ""),
+                    "year": (movie or {}).get("year"),
+                    "poster_url": str((movie or {}).get("poster_url") or ""),
+                    "genres": [str(value) for value in (movie or {}).get("genres", [])[:3]],
+                })
+            watched = "、".join(f"《{item['title']}》" for item in movies) or "这个月还没有新增看过电影"
+            themes = [
+                str(item.get("label", "")).strip()
+                for item in content.get("themes", [])
+                if str(item.get("label", "")).strip()
+            ][:5]
+            try:
+                year, month = (int(value) for value in source_id.split("-", 1))
+                month_label = f"{year}年{month}月"
+            except (TypeError, ValueError):
+                month_label = source_id
+            count = len(movies)
+            first_titles = [f"《{item['title']}》" for item in movies[:3]]
+            if count:
+                route = "、".join(first_titles)
+                remainder = f"等 {count} 部电影" if count > len(first_titles) else f"这 {count} 部电影"
+                theme_sentence = f"，也留下了关于{'、'.join(themes)}的线索" if themes else ""
+                story = f"这个月的银幕旅程经过了{route}，{remainder}{theme_sentence}。"
+                story_title = f"和 {count} 部电影，一起走过这个月"
+            else:
+                story = "这个月暂时没有新增看过的电影，下一次银幕相遇仍然值得等待。"
+                story_title = "这个月，故事仍在等待开场"
+            next_direction = str(content.get("next_direction", "")).strip()
+            body = preview or f"这个月看过：{watched}。{next_direction}".strip()
+            title = f"{month_label} · 我的电影月刊"
+            stable_source_id = str(recap["id"])
+        elif source_type == "taste_dimension":
+            profile = self.app.store.account_profile(account_id)
+            dimension = next(
+                (
+                    item for item in profile.get("taste_dimensions", [])
+                    if item.get("id") == source_id and not item.get("hidden")
+                ),
+                None,
+            )
+            if not dimension:
+                raise ValueError("口味维度不存在或已隐藏")
+            evidence = "、".join(f"《{item['title']}》" for item in dimension.get("evidence", []))
+            body = preview or f"{dimension['label']}。电影证据：{evidence}"
+            title = "我的电影口味"
+            stable_source_id = source_id
+        else:
+            raise ValueError("分享内容类型无效")
+        if not 1 <= len(body) <= 1200:
+            raise ValueError("分享文字必须在 1 到 1200 个字符之间")
+        payload["source_id"] = stable_source_id
+        result = {
+            "title": title,
+            "text": body,
+            "attribution": "由影伴 AI 协助整理",
+        }
+        if source_type == "monthly_recap":
+            result["visual"] = {
+                "variant": "monthly_recap",
+                "month": source_id,
+                "month_label": month_label,
+                "movie_count": count,
+                "movies": movies,
+                "themes": themes,
+                "reflection_count": len(content.get("confirmed_reflections", [])),
+                "next_direction": next_direction,
+                "story_title": story_title,
+                "story": story,
+            }
+        return result
+
+    def _start_voice_job(
+        self, account_id: str, job_id: str, text_value: str, full: bool
+    ) -> None:
+        app = self.app
+
+        def work() -> dict[str, Any]:
+            started = time.perf_counter()
+            try:
+                spoken = compact_voice_text(text_value, full)
+                audio, content_type = app.voice.synthesize(spoken)  # type: ignore[union-attr]
+                with EPHEMERAL_AUDIO_LOCK:
+                    EPHEMERAL_AUDIO[job_id] = (time.time() + 600, audio, content_type)
+                app.store.record_model_usage(
+                    "tts", "voice", "background-voice", True,
+                    round((time.perf_counter() - started) * 1000), account_id,
+                )
+                return {"audio_available": True, "mode": "full" if full else "summary"}
+            except Exception as error:
+                app.store.record_model_usage(
+                    "tts", "voice", "background-voice", False,
+                    round((time.perf_counter() - started) * 1000), account_id,
+                    error_category=type(error).__name__,
+                )
+                raise
+
+        self._start_background_runner(
+            account_id,
+            job_id,
+            work,
+            success_event="voice_job_succeeded",
+        )
+
+    def _start_reflection_job(
+        self,
+        account_id: str,
+        job_id: str,
+        movie_id: str,
+        history: list[dict[str, Any]],
+        regenerate: bool,
+    ) -> None:
+        app = self.app
+
+        def work() -> dict[str, Any]:
+            bundle = app.store.reflection_bundle(account_id, movie_id)
+            base = bundle["confirmed"] or bundle["current"] or {}
+            user_messages = [
+                str(item.get("content", "")).strip() for item in history
+                if isinstance(item, dict) and item.get("role") == "user"
+            ]
+            working_history = history
+            if not has_reflection_signal(user_messages) and regenerate and base.get("content"):
+                user_messages = [str(base["content"])]
+                working_history = [{"role": "user", "content": str(base["content"])}]
+            if not has_reflection_signal(user_messages):
+                raise ValueError("还需要至少一句更具体的电影感受，才能整理草稿")
+            draft = app.agent.summarize_reflection(
+                app.store.movie(movie_id) or {}, str(base.get("content", "")),
+                working_history, user_messages[-1],
+                next(
+                    (
+                        str(item.get("content", "")) for item in reversed(working_history)
+                        if isinstance(item, dict) and item.get("role") == "assistant"
+                    ),
+                    "",
+                ),
+            )
+            if not draft or draft == str(base.get("content", "")):
+                raise ValueError("这次还没有足够的新电影感受可整理")
+            current = app.store.create_reflection_version(
+                account_id, movie_id, draft, "ai", "draft",
+                int(base["version"]) if base.get("version") else None,
+            )
+            return {"movie_id": movie_id, "version": current["version"]}
+
+        self._start_background_runner(
+            account_id,
+            job_id,
+            work,
+            success_event="reflection_draft_created",
+        )
+
+    def _start_poster_job(
+        self, account_id: str, job_id: str, movie_ids: list[str]
+    ) -> None:
+        app = self.app
+
+        def work() -> dict[str, Any]:
+            movies = [movie for movie_id in movie_ids if (movie := app.store.movie(movie_id))]
+            hydrated = app.internet.hydrate_movie_posters(movies, limit=5)  # type: ignore[union-attr]
+            updated_ids = [str(item["id"]) for item in hydrated if item.get("poster_url")]
+            return {"movie_ids": updated_ids}
+
+        self._start_background_runner(account_id, job_id, work)
+
+    def _start_background_runner(
+        self,
+        account_id: str,
+        job_id: str,
+        work: Callable[[], dict[str, Any]],
+        *,
+        success_event: str | None = None,
+    ) -> None:
+        """Run a reference-only job with bounded automatic retries.
+
+        Attempts are deliberately immediate: these jobs are user-triggered and
+        short-lived. Persisted input remains IDs/options only; generated audio is
+        retained solely in the in-process ten-minute cache.
+        """
+        app = self.app
+
+        def run() -> None:
+            job = app.store.background_job(account_id, job_id) or {}
+            max_attempts = max(1, int(job.get("max_attempts", 1)))
+            last_error: Exception | None = None
+            for _attempt in range(max_attempts):
+                try:
+                    current = app.store.background_job(account_id, job_id) or {}
+                    if current.get("status") == "expired":
+                        return
+                    app.store.update_background_job(account_id, job_id, "running")
+                    result = work()
+                    current = app.store.background_job(account_id, job_id) or {}
+                    if current.get("status") == "expired":
+                        return
+                    app.store.update_background_job(
+                        account_id, job_id, "succeeded", result=result
+                    )
+                    if success_event:
+                        app.store.record_product_event(success_event, account_id, result)
+                    return
+                except Exception as error:  # noqa: BLE001
+                    last_error = error
+                    LOG.warning(
+                        "background job %s attempt failed: %s",
+                        job.get("job_type", "unknown"),
+                        type(error).__name__,
+                    )
+            app.store.update_background_job(
+                account_id,
+                job_id,
+                "failed",
+                error_category=type(last_error).__name__ if last_error else "UnknownError",
+            )
+            app.store.record_product_event(
+                "background_job_failed",
+                account_id,
+                {"job_type": job.get("job_type", "unknown"), "attempts": max_attempts},
+            )
+
+        threading.Thread(target=run, daemon=True, name=f"yingban-{job_id}").start()
+
     def _diverse_onboarding_candidates(self) -> list[dict[str, Any]]:
         movies = self.app.store.all_movies()
         selected: list[dict[str, Any]] = []
@@ -1016,6 +1658,8 @@ class YingbanHandler(BaseHTTPRequestHandler):
             relative = "index.html"
         elif path in {"/admin", "/admin/", "/admin.html"}:
             relative = "admin.html"
+        elif path in {"/share", "/share/", "/share.html"}:
+            relative = "share.html"
         else:
             relative = unquote(path.lstrip("/"))
         candidate = (self.app.settings.web_dir / relative).resolve()

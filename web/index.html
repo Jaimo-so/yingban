@@ -10,7 +10,7 @@
         window.location.replace("http://127.0.0.1:8765/");
       }
     </script>
-    <link rel="stylesheet" href="/styles.css?v=9">
+    <link rel="stylesheet" href="/styles.css?v=15">
   </head>
   <body>
     <div class="film-grain" aria-hidden="true"></div>
@@ -141,6 +141,22 @@
             </button>
           </div>
 
+          <section id="weekly-card" class="weekly-card" aria-labelledby="weekly-title" hidden>
+            <div class="weekly-card-head">
+              <div>
+                <p class="eyebrow">THIS WEEK</p>
+                <h2 id="weekly-title">这周，可以从这里开始</h2>
+                <p id="weekly-reason"></p>
+              </div>
+              <button id="weekly-dismiss" class="text-button" type="button">本周不再显示</button>
+            </div>
+            <div id="weekly-movies" class="weekly-movies"></div>
+            <form id="weekly-refresh-form" class="weekly-refresh-form">
+              <label for="weekly-direction">这周想换个方向</label>
+              <div><input id="weekly-direction" maxlength="300" placeholder="例如：轻一点，不要爱情片"><button class="button button-secondary" type="submit">换个方向</button></div>
+            </form>
+          </section>
+
           <aside class="memory-note">
             <span class="memory-icon" aria-hidden="true">✦</span>
             <div>
@@ -154,6 +170,11 @@
             <span><strong>阿映目前怎么理解我</strong><small>查看电影证据、修正口味结论</small></span>
             <span aria-hidden="true">→</span>
           </button>
+          <button id="continuity-settings-button" class="taste-profile-entry" type="button">
+            <span class="memory-icon" aria-hidden="true">◷</span>
+            <span><strong>连续性与主动建议设置</strong><small>本机历史对话保留 7 天；管理本周建议</small></span>
+            <span aria-hidden="true">→</span>
+          </button>
         </section>
 
         <section id="chat-view" class="view chat-view" hidden>
@@ -164,6 +185,11 @@
               <h1 id="chat-title">刚看完哪一部？</h1>
             </div>
             <div class="chat-preferences">
+              <button id="chat-history-button" class="voice-autoplay-toggle" type="button" aria-label="打开历史对话" hidden>
+                <svg class="history-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2M6.4 5.9 4.8 4.3M17.6 5.9l1.6-1.6"/></svg>
+                <span>历史对话</span>
+              </button>
+              <button id="conversation-summary-button" class="voice-autoplay-toggle" type="button" hidden>下次继续聊</button>
               <button id="reflection-generate-button" class="voice-autoplay-toggle" type="button" hidden>整理这次观后感</button>
               <label id="spoiler-control" class="spoiler-control">
                 <input id="spoilers-allowed" type="checkbox" checked>
@@ -174,6 +200,11 @@
                 <span>自动播放</span>
               </button>
             </div>
+          </div>
+
+          <div id="chat-draft-notice" class="chat-draft-notice" hidden>
+            <span id="chat-draft-message">正在查看此设备上的历史对话（最多保留 7 天）。</span>
+            <button id="chat-draft-clear" class="text-button" type="button">开始新对话</button>
           </div>
 
           <div id="chat-messages" class="chat-messages" aria-live="polite"></div>
@@ -209,6 +240,7 @@
               <p>这不是一份考勤表，只是让我们下次聊起时不会从头认识。</p>
             </div>
             <button id="add-movie-button" class="button button-secondary" type="button">＋ 添加电影</button>
+            <button id="monthly-recap-button" class="button button-secondary" type="button">本月电影回顾</button>
           </div>
           <div class="history-tabs" role="tablist" aria-label="电影状态">
             <button class="history-tab is-active" data-state="watched" role="tab" type="button">看过</button>
@@ -216,6 +248,7 @@
             <button class="history-tab" data-state="disliked" role="tab" type="button">不感兴趣</button>
           </div>
           <div id="history-grid" class="history-grid"></div>
+          <button id="history-load-more" class="button button-secondary history-load-more" type="button" hidden>加载更多</button>
           <div id="history-empty" class="empty-state" hidden>
             <span aria-hidden="true">◯</span>
             <h2>这里还没有电影</h2>
@@ -265,8 +298,110 @@
         <button id="reflection-confirm" class="button button-secondary" type="button">确认这份草稿</button>
         <button id="reflection-lock" class="button button-secondary" type="button">锁定</button>
         <button id="reflection-regenerate" class="button button-secondary" type="button">重新整理</button>
+        <button id="reflection-share" class="button button-secondary" type="button">生成分享卡</button>
         <button id="reflection-delete" class="text-button danger-text" type="button">只删除观后感</button>
         <button id="reflection-continue" class="button button-primary" type="button">继续聊这部电影</button>
+      </div>
+    </dialog>
+
+    <dialog id="conversation-summary-dialog" class="utility-dialog" aria-labelledby="conversation-summary-title">
+      <form method="dialog" class="dialog-head">
+        <div><span class="eyebrow">CONTINUE NEXT TIME</span><h2 id="conversation-summary-title">下次继续聊这部</h2></div>
+        <button class="icon-button" value="cancel" aria-label="关闭电影会话摘要">×</button>
+      </form>
+      <div class="utility-dialog-body">
+        <p>只保存与这部电影直接相关的讨论进度，不保存原始聊天或现实生活记录。</p>
+        <label for="conversation-summary-text">保存前预览与编辑</label>
+        <textarea id="conversation-summary-text" maxlength="2000" rows="7"></textarea>
+        <label for="conversation-open-question">下次可以接着聊的问题</label>
+        <input id="conversation-open-question" maxlength="240" placeholder="例如：结尾那个选择到底意味着什么？">
+        <p id="conversation-summary-state" class="action-result" role="status"></p>
+      </div>
+      <div class="dialog-actions">
+        <button id="conversation-summary-delete" class="text-button danger-text" type="button">删除已存摘要</button>
+        <button id="conversation-summary-save" class="button button-primary" type="button">同意并保存</button>
+      </div>
+    </dialog>
+
+    <dialog id="conversation-history-dialog" class="utility-dialog conversation-history-dialog" aria-labelledby="conversation-history-title">
+      <form method="dialog" class="dialog-head">
+        <div><span class="eyebrow">LOCAL CONVERSATIONS</span><h2 id="conversation-history-title">历史对话</h2></div>
+        <button class="icon-button" value="cancel" aria-label="关闭历史对话">×</button>
+      </form>
+      <div class="utility-dialog-body conversation-history-body">
+        <p>原始聊天只保存在当前浏览器，默认 7 天后自动过期，不会上传服务端。</p>
+        <p id="conversation-history-count" class="conversation-history-count" aria-live="polite"></p>
+        <div id="conversation-history-list" class="conversation-history-list"></div>
+      </div>
+    </dialog>
+
+    <dialog id="conversation-history-delete-dialog" class="utility-dialog compact-confirm-dialog" aria-labelledby="conversation-history-delete-title" aria-describedby="conversation-history-delete-description">
+      <div class="dialog-head">
+        <div><span class="eyebrow">DELETE LOCAL COPY</span><h2 id="conversation-history-delete-title">删除这段历史对话？</h2></div>
+      </div>
+      <div class="utility-dialog-body">
+        <p id="conversation-history-delete-description">将从当前浏览器删除 <strong id="conversation-history-delete-name">这段对话</strong>，删除后无法恢复，不影响电影片单和观后感。</p>
+      </div>
+      <div class="dialog-actions">
+        <button id="conversation-history-delete-cancel" class="button button-secondary" type="button">取消</button>
+        <button id="conversation-history-delete-confirm" class="button button-primary" type="button">确认删除</button>
+      </div>
+    </dialog>
+
+    <dialog id="monthly-recap-dialog" class="utility-dialog" aria-labelledby="monthly-recap-title">
+      <form method="dialog" class="dialog-head">
+        <div><span class="eyebrow">MONTH IN FILMS</span><h2 id="monthly-recap-title">本月电影回顾</h2></div>
+        <button class="icon-button" value="cancel" aria-label="关闭月度电影回顾">×</button>
+      </form>
+      <div id="monthly-recap-content" class="utility-dialog-body"></div>
+      <div class="utility-dialog-body">
+        <label for="monthly-next-direction">下个月想继续的方向</label>
+        <input id="monthly-next-direction" maxlength="300" placeholder="可选，由你自己决定">
+      </div>
+      <div class="dialog-actions">
+        <button id="monthly-recap-generate" class="button button-secondary" type="button">按真实数据生成</button>
+        <button id="monthly-recap-confirm" class="button button-primary" type="button">确认这份回顾</button>
+        <button id="monthly-recap-share" class="button button-secondary" type="button">生成精美分享卡</button>
+      </div>
+    </dialog>
+
+    <dialog id="share-dialog" class="utility-dialog" aria-labelledby="share-title">
+      <form method="dialog" class="dialog-head">
+        <div><span class="eyebrow">SHARE PREVIEW</span><h2 id="share-title">分享前最后确认</h2></div>
+        <button class="icon-button" value="cancel" aria-label="取消分享">×</button>
+      </form>
+      <div class="utility-dialog-body">
+        <label for="share-preview-text">要分享的文字</label>
+        <textarea id="share-preview-text" maxlength="1200" rows="8"></textarea>
+        <p class="fine-print">默认不包含账户信息、邀请码、聊天原文或未确认草稿，并标注“由影伴 AI 协助整理”。</p>
+        <p id="share-result" class="share-result" hidden></p>
+      </div>
+      <div class="dialog-actions">
+        <button id="share-revoke" class="text-button danger-text" type="button" hidden>撤回这个分享</button>
+        <button id="share-create" class="button button-primary" type="button">创建 7 天有效分享</button>
+      </div>
+    </dialog>
+
+    <dialog id="continuity-settings-dialog" class="utility-dialog" aria-labelledby="continuity-settings-title">
+      <form method="dialog" class="dialog-head">
+        <div><span class="eyebrow">YOUR CONTROL</span><h2 id="continuity-settings-title">连续性与主动建议</h2></div>
+        <button class="icon-button" value="cancel" aria-label="关闭设置">×</button>
+      </form>
+      <div class="utility-dialog-body settings-stack">
+        <section><h3>本机历史对话</h3><p>每次进入“聊电影”都会开始新对话；旧对话仅保存在当前浏览器，默认 7 天后自动过期，不会上传服务端。</p><button id="clear-all-local-drafts" class="button button-secondary" type="button">清空此设备全部历史对话</button></section>
+        <section><h3>本周电影建议</h3><p>每个自然周最多自动生成一次，仅在应用首页出现。</p><label class="inline-check"><input id="weekly-enabled" type="checkbox" checked><span>允许显示本周电影建议</span></label></section>
+      </div>
+    </dialog>
+
+    <dialog id="logout-dialog" class="utility-dialog" aria-labelledby="logout-title">
+      <form method="dialog" class="dialog-head">
+        <div><span class="eyebrow">LEAVE THIS DEVICE</span><h2 id="logout-title">退出前，处理历史对话</h2></div>
+        <button class="icon-button" value="cancel" aria-label="取消退出">×</button>
+      </form>
+      <div class="utility-dialog-body"><p>退出账户不会自动上传历史对话。共用设备建议同时清空；私人设备可以保留最多 7 天。</p></div>
+      <div class="dialog-actions">
+        <button id="logout-keep-drafts" class="button button-secondary" type="button">保留历史并退出</button>
+        <button id="logout-clear-drafts" class="button button-primary" type="button">清空历史并退出</button>
       </div>
     </dialog>
 
@@ -284,6 +419,6 @@
     </dialog>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/app.js?v=9" defer></script>
+    <script src="/app.js?v=14" defer></script>
   </body>
 </html>

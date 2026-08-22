@@ -702,12 +702,8 @@ class AgentRuntime:
             min(config.max_tokens, 700),
             min(config.temperature, 0.35),
         )
-        bounded = self._bounded_history(history)[-8:]
-        bounded.extend(
-            [
-                {"role": "user", "content": str(user_message)[:3000]},
-                {"role": "assistant", "content": str(assistant_reply)[:3000]},
-            ]
+        reflection_context = self._reflection_context(
+            history, user_message, assistant_reply
         )
         reflection_input = {
             "movie": {
@@ -716,7 +712,7 @@ class AgentRuntime:
                 "themes": movie.get("themes", []),
             },
             "existing_note": str(existing_note or "")[:1800],
-            "conversation": bounded,
+            "conversation_context": reflection_context,
         }
         started = time.perf_counter()
         try:
@@ -726,9 +722,12 @@ class AgentRuntime:
 必须遵守：
 - 只记录用户明确表达的电影感受、判断、困惑、喜欢或不喜欢的角色/情节/主题，不猜测。
 - 不保存用户的现实烦恼、心理状态、健康、家庭、工作、学校、身份、联系方式或其他敏感经历；即使对话提到也要省略。
-- 把已有笔记和新内容自然整合，不重复、不写对话过程、不引用阿映的话。
+- `conversation_context` 只用于理解上下文；只有 `role=user` 的文字是用户观感证据。绝不能把 `role=assistant` 的自述、判断或推荐写成用户观点。
+- 忽略用户向阿映提问但没有表达自身观感的句子，也忽略明显在谈其他电影的内容。
+- “还好”“还行”“一般”“没感觉”等简短但明确的评价也是有效观感；内容少时宁可忠实地写得短，不要扩写或拔高。
+- 把已有笔记和新的用户观感自然整合，不重复、不写对话过程、不引用阿映的话。
 - 使用中性、温和、便于用户以后回看的语气；可以使用“你”，不要冒充用户写第一人称日记。
-- 输出 80 至 500 个中文字符的纯文本，可分为 2 至 3 个短段落；不要标题、Markdown、URL 或项目符号。
+- 输出 20 至 500 个中文字符的纯文本；内容充足时可分为 2 至 3 个短段落，不要标题、Markdown、URL 或项目符号。
 - 如果本轮没有任何可安全长期保存的电影感受，只输出：NO_UPDATE""",
                 [{"role": "user", "content": json.dumps(reflection_input, ensure_ascii=False)}],
             )
@@ -755,6 +754,36 @@ class AgentRuntime:
             return str(existing_note or "").strip()
         text = text.replace("**", "").replace("__", "").strip()
         return text[:2000]
+
+    @staticmethod
+    def _reflection_context(
+        history: list[dict[str, str]],
+        user_message: str,
+        assistant_reply: str,
+    ) -> list[dict[str, str]]:
+        """Keep early and recent movie context without treating AI text as evidence."""
+        clean: list[dict[str, str]] = []
+        for item in history:
+            role = str(item.get("role", ""))
+            content = str(item.get("content", "")).strip()
+            if role not in {"user", "assistant"} or not content:
+                continue
+            limit = 1200 if role == "user" else 600
+            clean.append({"role": role, "content": content[:limit]})
+        additions = [
+            {"role": "user", "content": str(user_message).strip()[:1200]},
+            {"role": "assistant", "content": str(assistant_reply).strip()[:600]},
+        ]
+        for item in additions:
+            if item["content"] and not (
+                clean
+                and clean[-1]["role"] == item["role"]
+                and clean[-1]["content"] == item["content"]
+            ):
+                clean.append(item)
+        if len(clean) > 24:
+            clean = clean[:12] + clean[-12:]
+        return clean
 
     def respond(
         self,
