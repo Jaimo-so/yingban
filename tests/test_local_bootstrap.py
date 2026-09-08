@@ -81,14 +81,15 @@ class LocalBootstrapTests(unittest.TestCase):
         self.assertFalse(has_usable_invite([]))
         self.assertFalse(has_usable_invite([{"status": "revoked"}]))
 
-    def test_launcher_and_pages_explain_first_run_credentials(self) -> None:
+    def test_launcher_uses_local_open_access_without_bootstrap_credentials(self) -> None:
         user_html = (PRODUCT_DIR / "web" / "index.html").read_text(encoding="utf-8")
         admin_html = (PRODUCT_DIR / "web" / "admin.html").read_text(encoding="utf-8")
         launcher = (PRODUCT_DIR / "启动影伴.command").read_text(encoding="utf-8")
 
-        self.assertIn("邀请码会显示在启动窗口并复制到剪贴板", user_html)
-        self.assertIn("首次本机启动会在启动窗口显示口令", admin_html)
-        self.assertIn("python local_bootstrap.py", launcher)
+        self.assertIn("本机双击版会直接进入", user_html)
+        self.assertIn("本机双击版会直接进入管理台", admin_html)
+        self.assertIn('YINGBAN_LOCAL_OPEN_ACCESS="true"', launcher)
+        self.assertNotIn("python local_bootstrap.py", launcher)
 
 
 if __name__ == "__main__":

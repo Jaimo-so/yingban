@@ -29,7 +29,7 @@ from product_skills import (
     STRUCTURED_REVIEW_SKILL,
     VIEWING_COGNITION_SKILL,
 )
-from settings import Settings
+from settings import Settings, is_loopback_host
 from storage import InviteError, Store
 from voice import VoiceRuntime
 
@@ -48,6 +48,7 @@ class AppContext:
     internet: InternetRuntime | None = None
     voice: VoiceRuntime | None = None
     image: ImageRuntime | None = None
+    local_account_id: str | None = None
 
 
 class LoginLimiter:
@@ -374,7 +375,13 @@ class YingbanHandler(BaseHTTPRequestHandler):
 
         if path == "/api/health":
             mode = "demo" if self.app.agent.model_config().demo_mode else "model"
-            self._json({"ok": True, "mode": mode})
+            self._json(
+                {
+                    "ok": True,
+                    "mode": mode,
+                    "local_open_access": self._local_open_access(),
+                }
+            )
             return
 
         if path == "/api/me":
@@ -388,6 +395,7 @@ class YingbanHandler(BaseHTTPRequestHandler):
             self._json(
                 {
                     "authenticated": True,
+                    "local_open_access": self._local_open_access(),
                     "account": {"id_hint": account_id[-6:], "watched_count": watched_count},
                     "demo_mode": self.app.agent.model_config().demo_mode,
                     "openings": self.app.agent.openings(),
@@ -667,6 +675,7 @@ class YingbanHandler(BaseHTTPRequestHandler):
             result["internet"] = self.app.internet.public_config() if self.app.internet else {}
             result["voice"] = self.app.voice.public_config() if self.app.voice else {}
             result["image"] = self.app.image.public_config() if self.app.image else {}
+            result["access"] = {"local_open_access": self._local_open_access()}
             self._json(result)
             return
 
@@ -2270,6 +2279,8 @@ class YingbanHandler(BaseHTTPRequestHandler):
         return value
 
     def _account_id(self) -> str | None:
+        if self._local_open_access():
+            return self.app.local_account_id
         return self.app.store.account_for_session(cookie_value(self.headers, USER_COOKIE))
 
     def _require_user(self) -> str | None:
@@ -2279,10 +2290,36 @@ class YingbanHandler(BaseHTTPRequestHandler):
         return account_id
 
     def _require_admin(self) -> bool:
+        if self._local_open_access():
+            return True
         valid = self.app.store.valid_admin_session(cookie_value(self.headers, ADMIN_COOKIE))
         if not valid:
             self._json({"error": "管理员未登录"}, HTTPStatus.UNAUTHORIZED)
         return valid
+
+    def _local_open_access(self) -> bool:
+        if not self.app.settings.local_open_access or not self.app.local_account_id:
+            return False
+        if not is_loopback_host(self.app.settings.host):
+            return False
+        if not is_loopback_host(str(self.client_address[0])):
+            return False
+        host_header = str(self.headers.get("Host", ""))
+        try:
+            request_host = urlparse(f"//{host_header}").hostname or ""
+        except ValueError:
+            return False
+        if not is_loopback_host(request_host):
+            return False
+        origin = str(self.headers.get("Origin", "")).strip()
+        if origin:
+            try:
+                origin_host = urlparse(origin).hostname or ""
+            except ValueError:
+                return False
+            if not is_loopback_host(origin_host):
+                return False
+        return True
 
     def _cookie(self, name: str, value: str, max_age: int) -> str:
         parts = [

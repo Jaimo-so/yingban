@@ -9,6 +9,7 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:${HOME}/.local/bin:${PATH}"
 export PORT="8765"
 export YINGBAN_HOST="127.0.0.1"
 export YINGBAN_PORT="8765"
+export YINGBAN_LOCAL_OPEN_ACCESS="true"
 export UV_CACHE_DIR="${HOME}/Library/Caches/yingban/uv"
 
 watcher_pid=""
@@ -39,7 +40,8 @@ pause_after_error() {
 health_ready() {
   local response
   response="$(curl --fail --silent --show-error --max-time 2 "$HEALTH_URL" 2>/dev/null)" || return 1
-  [[ "$response" == *'"ok":true'* || "$response" == *'"ok": true'* ]]
+  [[ ("$response" == *'"ok":true'* || "$response" == *'"ok": true'*) \
+    && ("$response" == *'"local_open_access":true'* || "$response" == *'"local_open_access": true'*) ]]
 }
 
 cd "$PROJECT_DIR" || pause_after_error "无法进入影伴项目目录。"
@@ -53,11 +55,6 @@ fi
 command -v uv >/dev/null 2>&1 || pause_after_error "未找到 uv，请先安装 uv。"
 command -v curl >/dev/null 2>&1 || pause_after_error "未找到 curl。"
 command -v open >/dev/null 2>&1 || pause_after_error "未找到 macOS 的 open 命令。"
-
-print "正在检查首次启动配置……"
-uv run --isolated --python 3.12 \
-  --with-requirements requirements.txt \
-  python local_bootstrap.py || pause_after_error "首次启动配置失败。"
 
 FRONTEND_EXPORT="frontend/out/index.html"
 FRONTEND_NEEDS_BUILD=0

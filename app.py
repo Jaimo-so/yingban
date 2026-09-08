@@ -13,13 +13,17 @@ from fastapi_app import create_fastapi_app
 from integrations import InternetRuntime
 from image_models import ImageRuntime
 from server import AppContext
-from settings import Settings
+from settings import Settings, is_loopback_host
 from storage import Store
 from voice import VoiceRuntime
 
 
 def build_context(settings: Settings | None = None) -> AppContext:
     settings = settings or Settings()
+    if settings.local_open_access and not is_loopback_host(settings.host):
+        raise ValueError(
+            "YINGBAN_LOCAL_OPEN_ACCESS 只能与 localhost 或回环 IP 一起使用"
+        )
     store = Store(
         settings.database_path,
         settings.invite_pepper,
@@ -34,6 +38,7 @@ def build_context(settings: Settings | None = None) -> AppContext:
     voice = VoiceRuntime(settings, store)
     image = ImageRuntime(settings, store)
     agent = AgentRuntime(settings, store, catalog, internet)
+    local_account_id = store.ensure_local_account() if settings.local_open_access else None
     return AppContext(
         settings=settings,
         store=store,
@@ -42,6 +47,7 @@ def build_context(settings: Settings | None = None) -> AppContext:
         internet=internet,
         voice=voice,
         image=image,
+        local_account_id=local_account_id,
     )
 
 
@@ -51,6 +57,7 @@ def serve(app: AppContext) -> None:
     print(f"影伴已启动：http://{app.settings.host}:{app.settings.port}")
     print(f"管理员后台：http://{app.settings.host}:{app.settings.port}/admin")
     print(f"当前模式：{mode}")
+    print(f"访问方式：{'本机免认证' if app.settings.local_open_access else '邀请码与管理员口令'}")
     print(f"联网电影：{'已接入' if app.internet and app.internet.config().movie_enabled else '未配置'}")
     print(f"语音交互：{'已接入' if app.voice and app.voice.config().enabled else '未配置'}")
     print(f"图像模型：{'已接入' if app.image and app.image.config().enabled else '未配置'}")

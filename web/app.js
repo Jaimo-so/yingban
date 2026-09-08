@@ -3,6 +3,7 @@ const $$ = (selector) => [...document.querySelectorAll(selector)];
 
 const state = {
   authenticated: false,
+  localOpenAccess: false,
   mode: null,
   chatHistory: [],
   currentConversationId: null,
@@ -224,6 +225,8 @@ function showToast(message) {
 
 function showAuthenticated(me) {
   state.authenticated = true;
+  state.localOpenAccess = Boolean(me.local_open_access);
+  $("#logout-button").hidden = state.localOpenAccess;
   $("#login-view").hidden = true;
   $("#app-shell").hidden = false;
   $("#watched-count").textContent = me.account?.watched_count ?? 0;

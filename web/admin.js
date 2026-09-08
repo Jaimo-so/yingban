@@ -3,6 +3,7 @@ let promptDefaults = { discussion: "", recommendation: "" };
 let openingDefaults = { discussion: "", discussion_movie: "", recommendation: "" };
 let skillDefaults = {};
 let activeSkillKey = "";
+let localOpenAccess = false;
 const STEPFUN_BASE_URL = "https://api.stepfun.com/step_plan/v1";
 const CUSTOM_BASE_URL = "__custom__";
 const MODEL_PROVIDER_LABELS = {
@@ -202,6 +203,9 @@ async function loadDashboard() {
       api("/api/admin/skills"),
     ]);
     renderInvites(invites);
+    localOpenAccess = Boolean(config.access?.local_open_access);
+    $("#invite-settings").hidden = localOpenAccess;
+    document.querySelector('a[href="#invite-settings"]').hidden = localOpenAccess;
     renderAgentConfig(config);
     renderMetrics(metrics);
     renderUsagePricing(pricing);
@@ -785,7 +789,7 @@ function updatePromptCounts() {
 function showDashboardShell() {
   $("#admin-login").hidden = true;
   $("#admin-dashboard").hidden = false;
-  $("#admin-logout").hidden = false;
+  $("#admin-logout").hidden = localOpenAccess;
 }
 
 function inviteRow(invite) {

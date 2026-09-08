@@ -1408,6 +1408,36 @@ class Store:
             )
         return account_id, token
 
+    def ensure_local_account(self) -> str:
+        """Return the single local owner account used by local open-access mode.
+
+        A database with exactly one active account keeps using that account so
+        enabling local mode does not hide an existing owner's movie history.
+        Multi-account databases get a dedicated local owner instead of choosing
+        another person's account arbitrarily.
+        """
+        local_account_id = "usr_local_owner"
+        with self.transaction(immediate=True) as connection:
+            local_row = connection.execute(
+                "SELECT status FROM accounts WHERE id = ?", (local_account_id,)
+            ).fetchone()
+            if local_row is not None:
+                if local_row["status"] != "active":
+                    raise RuntimeError("本机免认证账户当前不可用")
+                return local_account_id
+
+            active_rows = connection.execute(
+                "SELECT id FROM accounts WHERE status = 'active' ORDER BY created_at, id"
+            ).fetchall()
+            if len(active_rows) == 1:
+                return str(active_rows[0]["id"])
+
+            connection.execute(
+                "INSERT INTO accounts (id, status, created_at) VALUES (?, 'active', ?)",
+                (local_account_id, utc_now()),
+            )
+            return local_account_id
+
     def account_for_session(self, token: str | None) -> str | None:
         if not token:
             return None

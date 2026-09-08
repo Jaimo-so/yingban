@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from ipaddress import ip_address
 from pathlib import Path
 
 
@@ -86,6 +87,17 @@ def _bool_env(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def is_loopback_host(host: str) -> bool:
+    """Return whether a hostname or address is confined to this machine."""
+    normalized = host.strip().strip("[]").rstrip(".").lower()
+    if normalized == "localhost":
+        return True
+    try:
+        return ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
 @dataclass(frozen=True)
 class Settings:
     base_dir: Path = BASE_DIR
@@ -114,6 +126,7 @@ class Settings:
     admin_token: str = os.getenv("YINGBAN_ADMIN_TOKEN", "")
     cookie_secure: bool = _bool_env("YINGBAN_COOKIE_SECURE", False)
     session_days: int = int(os.getenv("YINGBAN_SESSION_DAYS", "30"))
+    local_open_access: bool = _bool_env("YINGBAN_LOCAL_OPEN_ACCESS", False)
     model_provider: str = _DEFAULT_MODEL_PROVIDER
     model_api_key: str = _first_nonempty_env(
         "MODEL_API_KEY", "ANTHROPIC_API_KEY", "STEPFUN_API_KEY"
@@ -164,6 +177,9 @@ class Settings:
 
     def security_warnings(self) -> list[str]:
         warnings: list[str] = []
+        if self.local_open_access:
+            warnings.append("本机免认证模式已开启；不要通过反向代理或端口转发对外暴露")
+            return warnings
         if self.invite_pepper.startswith("development-"):
             warnings.append("YINGBAN_INVITE_PEPPER is using a development default")
         if self.session_secret.startswith("development-"):
