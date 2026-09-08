@@ -54,6 +54,11 @@ command -v uv >/dev/null 2>&1 || pause_after_error "未找到 uv，请先安装 
 command -v curl >/dev/null 2>&1 || pause_after_error "未找到 curl。"
 command -v open >/dev/null 2>&1 || pause_after_error "未找到 macOS 的 open 命令。"
 
+print "正在检查首次启动配置……"
+uv run --isolated --python 3.12 \
+  --with-requirements requirements.txt \
+  python local_bootstrap.py || pause_after_error "首次启动配置失败。"
+
 FRONTEND_EXPORT="frontend/out/index.html"
 FRONTEND_NEEDS_BUILD=0
 if [[ ! -f "$FRONTEND_EXPORT" ]]; then

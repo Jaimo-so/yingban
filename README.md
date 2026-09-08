@@ -23,6 +23,7 @@
 | `storage.py` | SQLite schema、迁移、事务、账户隔离与业务数据 |
 | `integrations.py`、`voice.py`、`image_models.py` | 电影、搜索、语音和图像供应商 |
 | `product_skills.py` | 三个内置 Skill 的定义与默认版本 |
+| `local_bootstrap.py` | 本机首次启动的安全凭据与首个邀请码初始化 |
 | `web/` | 用户端与管理端静态资源及交互 |
 | `frontend/` | Next.js App Router 静态导出外壳 |
 | `scripts/sqlite_maintenance.py` | SQLite 检查、备份和迁移 |
@@ -31,14 +32,19 @@
 
 要求 Python 3.12、Node.js 24 LTS、npm 和 `uv`。
 
-macOS 可在 Finder 中直接双击 `启动影伴.command`。启动器会自动定位项目、在需要时构建前端、启动本地服务，并在健康检查通过后打开默认浏览器。首次启动或 `requirements.txt` 更新后，`uv` 会联网补齐本机缓存里缺少的 Python 依赖；已缓存的依赖不会重复下载。终端窗口保持开启时，影伴服务持续运行；按 `Control-C` 可停止。
+macOS 可在 Finder 中直接双击 `启动影伴.command`。启动器会自动定位项目、在需要时构建前端、启动本地服务，并在健康检查通过后打开默认浏览器。首次启动会自动创建权限为 `0600` 的本机 `.env`、生成随机安全密钥、管理员口令和首个用户邀请码；邀请码会显示在启动窗口并复制到剪贴板，页面打开后按 `Command-V` 粘贴即可，不需要事先知道或自行设置密码。管理员口令只在首次创建时显示，同时保存在本机 `.env` 的 `YINGBAN_ADMIN_TOKEN` 中。
+
+首次启动或 `requirements.txt` 更新后，`uv` 会联网补齐本机缓存里缺少的 Python 依赖；已缓存的依赖不会重复下载。初始化不会覆盖已有 `.env`、邀请码或数据库；如果检测到已有数据库但安全凭据缺失，会停止并提示手动处理，避免破坏已有登录。终端窗口保持开启时，影伴服务持续运行；按 `Control-C` 可停止。
 
 ```bash
 git clone https://github.com/Jaimo-so/yingban.git
 cd yingban
-cp .env.example .env
 npm --prefix frontend ci
 npm --prefix frontend run build
+
+uv run --isolated --python 3.12 \
+  --with-requirements requirements.txt \
+  python local_bootstrap.py
 
 uv run --isolated --python 3.12 \
   --with-requirements requirements.txt \
@@ -71,7 +77,7 @@ npm --prefix frontend run verify:parity
 
 ## 配置边界
 
-- 从 `.env.example` 创建本地 `.env`，不要提交真实密钥、邀请码、会话令牌或数据库文件。
+- 双击启动会安全创建本机 `.env`；手动或生产部署可从 `.env.example` 配置。不要提交真实密钥、邀请码、会话令牌或数据库文件。
 - SQLite、模型、搜索、语音和图像能力均通过环境变量配置；未配置的附加能力应安全降级，不影响主文字回复。
 - 生产部署需要独立评估数据库持久化、备份、锁、并发、监控和密钥管理；仓库中的默认配置不代表高可用生产方案。
 
