@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import hmac
 import json
 import logging
@@ -16,11 +17,18 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from agent import AgentRuntime, BoundMovieTools
-from catalog import MovieCatalog
+from catalog import MovieCatalog, movie_recency_key, normalize
 from integrations import InternetRuntime
+from image_models import ImageRuntime
+from product_skills import (
+    BUILTIN_SKILLS_BY_KEY,
+    MOVIE_DECISION_SKILL,
+    STRUCTURED_REVIEW_SKILL,
+    VIEWING_COGNITION_SKILL,
+)
 from settings import Settings
 from storage import InviteError, Store
 from voice import VoiceRuntime
@@ -39,6 +47,7 @@ class AppContext:
     agent: AgentRuntime
     internet: InternetRuntime | None = None
     voice: VoiceRuntime | None = None
+    image: ImageRuntime | None = None
 
 
 class LoginLimiter:
@@ -82,6 +91,39 @@ def cookie_value(headers: Any, name: str) -> str | None:
 
 def public_movie(movie: dict[str, Any]) -> dict[str, Any]:
     return BoundMovieTools._public_movie(movie)
+
+
+DOUBAN_POSTER_PROXY_PATH_RE = re.compile(
+    r"^/api/posters/douban/(?P<filename>p[0-9]{6,20}\.jpg)$",
+    re.IGNORECASE,
+)
+PUBLIC_DOUBAN_POSTER_ROUTE_RE = re.compile(
+    r"^/api/public/share-cards/(?P<token>[^/]+)/posters/douban/(?P<filename>[^/]+)$"
+)
+
+
+def bind_public_share_poster_urls(
+    card: dict[str, Any], token: str
+) -> dict[str, Any]:
+    """Bind proxied poster URLs in a public payload to this share token."""
+    content = card.get("content")
+    visual = content.get("visual") if isinstance(content, dict) else None
+    movies = visual.get("movies") if isinstance(visual, dict) else None
+    if not isinstance(movies, list):
+        return card
+    encoded_token = quote(token, safe="")
+    for movie in movies:
+        if not isinstance(movie, dict):
+            continue
+        poster_url = str(movie.get("poster_url") or "")
+        match = DOUBAN_POSTER_PROXY_PATH_RE.fullmatch(poster_url)
+        if match is None:
+            continue
+        filename = match.group("filename")
+        movie["poster_url"] = (
+            f"/api/public/share-cards/{encoded_token}/posters/douban/{filename}"
+        )
+    return card
 
 
 POSTER_MARKDOWN_RE = re.compile(
@@ -195,6 +237,30 @@ class YingbanHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/cognition/entries/"):
+            account_id = self._require_user()
+            if not account_id:
+                return
+            entry_id = unquote(parsed.path.removeprefix("/api/cognition/entries/"))
+            removed = self.app.store.delete_cognition_entry(account_id, entry_id)
+            if removed:
+                self.app.store.record_product_event(
+                    "viewing_cognition_deleted", account_id, {"entry_id": entry_id}
+                )
+            self._json({"ok": removed})
+            return
+        if parsed.path.startswith("/api/content-drafts/"):
+            account_id = self._require_user()
+            if not account_id:
+                return
+            draft_id = unquote(parsed.path.removeprefix("/api/content-drafts/"))
+            removed = self.app.store.delete_content_draft(account_id, draft_id)
+            if removed:
+                self.app.store.record_product_event(
+                    "content_draft_deleted", account_id, {"draft_id": draft_id}
+                )
+            self._json({"ok": removed})
+            return
         if parsed.path.startswith("/api/conversations/") and parsed.path.endswith("/summary"):
             account_id = self._require_user()
             if not account_id:
@@ -260,6 +326,52 @@ class YingbanHandler(BaseHTTPRequestHandler):
         self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
     def _handle_api_get(self, path: str, query: dict[str, list[str]]) -> None:
+        public_poster_match = PUBLIC_DOUBAN_POSTER_ROUTE_RE.fullmatch(path)
+        if public_poster_match is not None:
+            token = unquote(public_poster_match.group("token"))
+            filename = unquote(public_poster_match.group("filename"))
+            poster_url = "/api/posters/douban/" + filename
+            if not self.app.store.public_share_uses_poster_url(token, poster_url):
+                self._json({"error": "海报不存在"}, HTTPStatus.NOT_FOUND)
+                return
+            if not self.app.store.has_poster_url(poster_url):
+                self._json({"error": "海报不存在"}, HTTPStatus.NOT_FOUND)
+                return
+            if self.app.internet is None:
+                self._json({"error": "海报服务暂时不可用"}, HTTPStatus.SERVICE_UNAVAILABLE)
+                return
+            try:
+                content, content_type = self.app.internet.fetch_douban_poster(filename)
+            except ValueError:
+                self._json({"error": "海报地址无效"}, HTTPStatus.BAD_REQUEST)
+                return
+            except RuntimeError:
+                self._json({"error": "海报暂时不可用"}, HTTPStatus.BAD_GATEWAY)
+                return
+            self._binary(content, content_type, "no-store")
+            return
+
+        if path.startswith("/api/posters/douban/"):
+            filename = unquote(path.removeprefix("/api/posters/douban/"))
+            poster_url = "/api/posters/douban/" + filename
+            account_id = self._account_id()
+            if not account_id or not self.app.store.has_poster_url(poster_url):
+                self._json({"error": "海报不存在"}, HTTPStatus.NOT_FOUND)
+                return
+            if self.app.internet is None:
+                self._json({"error": "海报服务暂时不可用"}, HTTPStatus.SERVICE_UNAVAILABLE)
+                return
+            try:
+                content, content_type = self.app.internet.fetch_douban_poster(filename)
+            except ValueError:
+                self._json({"error": "海报地址无效"}, HTTPStatus.BAD_REQUEST)
+                return
+            except RuntimeError:
+                self._json({"error": "海报暂时不可用"}, HTTPStatus.BAD_GATEWAY)
+                return
+            self._binary(content, content_type, "private, max-age=86400")
+            return
+
         if path == "/api/health":
             mode = "demo" if self.app.agent.model_config().demo_mode else "model"
             self._json({"ok": True, "mode": mode})
@@ -293,8 +405,45 @@ class YingbanHandler(BaseHTTPRequestHandler):
                     "weekly_recommendations": {
                         "enabled": profile["weekly_recommendations_enabled"]
                     },
+                    "skills": [
+                        {
+                            "key": skill["skill_key"],
+                            "name": skill["name"],
+                            "description": skill["description"],
+                            "module": skill["module"],
+                            "activation_mode": skill["activation_mode"],
+                            "enabled": skill["enabled"],
+                            "active_version": skill["active_version"],
+                        }
+                        for skill in self.app.store.list_skills()
+                        if skill["enabled"]
+                    ],
                 }
             )
+            return
+
+        if path.startswith("/api/cognition/") and not path.startswith("/api/cognition/entries/"):
+            account_id = self._require_user()
+            if not account_id:
+                return
+            movie_id = unquote(path.removeprefix("/api/cognition/"))
+            movie = self.app.store.movie(movie_id)
+            if movie is None:
+                self._json({"error": "movie not found"}, HTTPStatus.NOT_FOUND)
+                return
+            self._json({"movie": public_movie(movie), **self.app.store.cognition_bundle(account_id, movie_id)})
+            return
+
+        if path == "/api/content-drafts":
+            account_id = self._require_user()
+            if not account_id:
+                return
+            movie_id = str(query.get("movie_id", [""])[0])
+            movie = self.app.store.movie(movie_id)
+            if movie is None:
+                self._json({"error": "movie not found"}, HTTPStatus.NOT_FOUND)
+                return
+            self._json({"movie": public_movie(movie), **self.app.store.content_draft_bundle(account_id, movie_id)})
             return
 
         if path.startswith("/api/public/share-cards/"):
@@ -303,7 +452,7 @@ class YingbanHandler(BaseHTTPRequestHandler):
             if card is None:
                 self._json({"error": "分享不存在、已撤回或已过期"}, HTTPStatus.NOT_FOUND)
                 return
-            self._json({"card": card})
+            self._json({"card": bind_public_share_poster_urls(card, token)})
             return
 
         if path.startswith("/api/conversations/") and path.endswith("/summary"):
@@ -330,6 +479,13 @@ class YingbanHandler(BaseHTTPRequestHandler):
             if not account_id:
                 return
             self._json(self._weekly_recommendation_payload(account_id, mark_viewed=True))
+            return
+
+        if path == "/api/box-office":
+            account_id = self._require_user()
+            if not account_id:
+                return
+            self._json(self._daily_box_office_payload())
             return
 
         if path.startswith("/api/recaps/monthly/"):
@@ -376,17 +532,32 @@ class YingbanHandler(BaseHTTPRequestHandler):
             if not account_id:
                 return
             query_text = str(query.get("query", [""])[0]).strip()
+            search_status = "ready"
             if query_text:
-                items = self.app.catalog.search(query_text, limit=18)
-                if not items and self.app.internet is not None:
+                items = self.app.catalog.search(query_text, limit=18, newest_first=True)
+                if items and self.app.internet is not None:
+                    items = self.app.internet.hydrate_douban_posters(items, limit=8)
+                elif self.app.internet is not None:
                     try:
                         items = self.app.internet.search_movies(query_text)
                     except Exception as error:  # noqa: BLE001
                         LOG.warning("onboarding movie search failed: %s", type(error).__name__)
+                        search_status = "unavailable"
             else:
                 items = self._diverse_onboarding_candidates()
+            if query_text:
+                items = sorted(items, key=movie_recency_key)
             selected_ids = {item["id"] for item in self.app.store.onboarding_movies(account_id)}
-            self._json({"items": [public_movie(item) for item in items if item["id"] not in selected_ids]})
+            self._json(
+                {
+                    "items": [
+                        public_movie(item)
+                        for item in items
+                        if item["id"] not in selected_ids
+                    ],
+                    "search_status": search_status,
+                }
+            )
             return
 
         if path == "/api/taste-profile":
@@ -441,20 +612,52 @@ class YingbanHandler(BaseHTTPRequestHandler):
             account_id = self._require_user()
             if not account_id:
                 return
-            query_text = query.get("query", [""])[0]
-            items = self.app.catalog.search(query_text)
-            if not items and self.app.internet is not None:
+            query_text = str(query.get("query", [""])[0]).strip()
+            items = self.app.catalog.search(query_text, newest_first=True)
+            search_status = "ready"
+            if items and self.app.internet is not None:
+                items = self.app.internet.hydrate_douban_posters(items, limit=8)
+            elif self.app.internet is not None:
                 try:
                     items = self.app.internet.search_movies(query_text)
                 except Exception as error:  # noqa: BLE001
                     LOG.warning("external movie search failed: %s", type(error).__name__)
-            self._json({"items": [public_movie(item) for item in items]})
+                    search_status = "unavailable"
+            self._json(
+                {
+                    "items": [public_movie(item) for item in sorted(items, key=movie_recency_key)],
+                    "search_status": search_status,
+                }
+            )
             return
 
         if path == "/api/admin/invites":
             if not self._require_admin():
                 return
-            self._json({"items": self.app.store.list_invites()})
+            database_path = self.app.settings.database_path.expanduser().resolve()
+            temporary_roots = (Path("/tmp"), Path("/private/tmp"), Path("/var/tmp"))
+            persistent = not any(
+                database_path == root or database_path.is_relative_to(root)
+                for root in temporary_roots
+            )
+            self._json({
+                "items": self.app.store.list_invites(),
+                "storage": {"persistent": persistent},
+            })
+            return
+
+        if path.startswith("/api/admin/invites/") and path.endswith("/conversations"):
+            if not self._require_admin():
+                return
+            invite_id = unquote(
+                path.removeprefix("/api/admin/invites/").removesuffix("/conversations")
+            ).strip("/")
+            try:
+                result = self.app.store.invite_conversations(invite_id)
+            except InviteError as error:
+                self._json({"error": str(error)}, HTTPStatus.NOT_FOUND)
+                return
+            self._json(result)
             return
 
         if path == "/api/admin/agent-config":
@@ -463,7 +666,26 @@ class YingbanHandler(BaseHTTPRequestHandler):
             result = self.app.agent.public_configuration()
             result["internet"] = self.app.internet.public_config() if self.app.internet else {}
             result["voice"] = self.app.voice.public_config() if self.app.voice else {}
+            result["image"] = self.app.image.public_config() if self.app.image else {}
             self._json(result)
+            return
+
+        if path == "/api/admin/skills":
+            if not self._require_admin():
+                return
+            self._json(
+                {
+                    "items": self.app.store.list_skills(),
+                    "defaults": {
+                        key: {
+                            "instructions": value["instructions"],
+                            "input_contract": value["input_contract"],
+                            "output_contract": value["output_contract"],
+                        }
+                        for key, value in BUILTIN_SKILLS_BY_KEY.items()
+                    },
+                }
+            )
             return
 
         if path == "/api/admin/metrics/summary":
@@ -563,6 +785,60 @@ class YingbanHandler(BaseHTTPRequestHandler):
                 account_id, bool(payload.get("auto_generate_drafts", True))
             )
             self._json({"ok": True, "auto_generate_drafts": profile["auto_generate_reflection_drafts"]})
+            return
+        if path.startswith("/api/cognition/") and not path.startswith("/api/cognition/entries/"):
+            account_id = self._require_user()
+            if not account_id:
+                return
+            movie_id = unquote(path.removeprefix("/api/cognition/"))
+            if self.app.store.movie(movie_id) is None:
+                self._json({"error": "movie not found"}, HTTPStatus.NOT_FOUND)
+                return
+            try:
+                bundle = self.app.store.save_cognition_entry(
+                    account_id,
+                    movie_id,
+                    int(payload.get("viewing_round", 1)),
+                    str(payload.get("stage", "first_impression")),
+                    str(payload.get("raw_impression", "")),
+                    str(payload.get("synthesis", "")),
+                    payload.get("dimensions", []) if isinstance(payload.get("dimensions"), list) else [],
+                    str(payload.get("watched_at", "")) or None,
+                    str(payload.get("edition", "")),
+                )
+            except (TypeError, ValueError) as error:
+                self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+            self.app.store.record_product_event(
+                "viewing_cognition_saved", account_id,
+                {"movie_id": movie_id, "stage": str(payload.get("stage", ""))},
+            )
+            self._json({"ok": True, "movie": public_movie(self.app.store.movie(movie_id) or {}), **bundle})
+            return
+        if path == "/api/content-drafts":
+            account_id = self._require_user()
+            if not account_id:
+                return
+            movie_id = str(payload.get("movie_id", ""))
+            if self.app.store.movie(movie_id) is None:
+                self._json({"error": "movie not found"}, HTTPStatus.NOT_FOUND)
+                return
+            try:
+                bundle = self.app.store.create_content_draft(
+                    account_id,
+                    movie_id,
+                    str(payload.get("content_scene", "xiaohongshu")),
+                    str(payload.get("content", "")),
+                    str(payload.get("source_material", "")),
+                )
+            except ValueError as error:
+                self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+            self.app.store.record_product_event(
+                "content_draft_saved", account_id,
+                {"movie_id": movie_id, "content_scene": str(payload.get("content_scene", ""))},
+            )
+            self._json({"ok": True, "movie": public_movie(self.app.store.movie(movie_id) or {}), **bundle})
             return
         if path == "/api/weekly-recommendation/preferences":
             account_id = self._require_user()
@@ -804,6 +1080,7 @@ class YingbanHandler(BaseHTTPRequestHandler):
                         self.app.store.movie(movie_id) or {}, str(base.get("content", "")),
                         history, user_messages[-1],
                         next((str(item.get("content", "")) for item in reversed(history) if isinstance(item, dict) and item.get("role") == "assistant"), ""),
+                        account_id,
                     )
                     if not draft or draft == str(base.get("content", "")):
                         raise ValueError("这次还没有足够的新电影感受可整理")
@@ -933,11 +1210,78 @@ class YingbanHandler(BaseHTTPRequestHandler):
                 return
             try:
                 count = int(payload.get("count", 1))
-                codes = self.app.store.generate_invites(count)
+                codes = self.app.store.generate_invites(count, str(payload.get("note", "")))
             except (TypeError, ValueError) as error:
                 self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
                 return
             self._json({"codes": codes})
+            return
+        if path == "/api/conversations/sync":
+            account_id = self._require_user()
+            if not account_id:
+                return
+            try:
+                record = self.app.store.save_conversation_record(
+                    account_id,
+                    str(payload.get("conversation_id", "")),
+                    str(payload.get("movie_id", "")),
+                    payload.get("messages", []),
+                    str(payload.get("skill_key", "")) or None,
+                )
+            except ValueError as error:
+                self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+            self._json({"ok": True, "record": record})
+            return
+        if path.startswith("/api/admin/skills/"):
+            if not self._require_admin():
+                return
+            suffix = path.removeprefix("/api/admin/skills/")
+            parts = [unquote(part) for part in suffix.split("/") if part]
+            if len(parts) != 2:
+                self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+                return
+            skill_key, action = parts
+            try:
+                if action == "draft":
+                    skill = self.app.store.save_skill_draft(
+                        skill_key,
+                        str(payload.get("instructions", "")),
+                        payload.get("input_contract", {}) if isinstance(payload.get("input_contract"), dict) else {},
+                        payload.get("output_contract", {}) if isinstance(payload.get("output_contract"), dict) else {},
+                        str(payload.get("change_note", "")),
+                    )
+                elif action == "publish":
+                    skill = self.app.store.publish_skill_draft(skill_key)
+                elif action == "rollback":
+                    skill = self.app.store.rollback_skill(skill_key)
+                elif action == "enabled":
+                    skill = self.app.store.set_skill_enabled(skill_key, bool(payload.get("enabled")))
+                elif action == "restore":
+                    default = BUILTIN_SKILLS_BY_KEY.get(skill_key)
+                    if default is None:
+                        raise ValueError("Skill 不存在")
+                    skill = self.app.store.save_skill_draft(
+                        skill_key,
+                        str(default["instructions"]),
+                        dict(default["input_contract"]),
+                        dict(default["output_contract"]),
+                        "恢复内置默认版本",
+                    )
+                elif action == "preview":
+                    self._json({"ok": True, "preview": self.app.agent.skill_preview(skill_key)})
+                    return
+                else:
+                    self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+                    return
+            except ValueError as error:
+                self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+            self.app.store.record_product_event(
+                "admin_skill_changed",
+                properties={"skill_key": skill_key, "action": action},
+            )
+            self._json({"ok": True, "skill": skill})
             return
         if path == "/api/admin/agent-config/model":
             if not self._require_admin():
@@ -1058,6 +1402,36 @@ class YingbanHandler(BaseHTTPRequestHandler):
                 return
             self._json({"ok": True, **result})
             return
+        if path == "/api/admin/image-config":
+            if not self._require_admin():
+                return
+            if self.app.image is None:
+                self._json({"error": "图像服务不可用"}, HTTPStatus.SERVICE_UNAVAILABLE)
+                return
+            try:
+                config = self.app.image.save_config(payload)
+            except ValueError as error:
+                self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+            self._json({"ok": True, "image": config})
+            return
+        if path == "/api/admin/image-config/test":
+            if not self._require_admin():
+                return
+            if self.app.image is None:
+                self._json({"error": "图像服务不可用"}, HTTPStatus.SERVICE_UNAVAILABLE)
+                return
+            try:
+                result = self.app.image.test_connection(payload)
+            except ValueError as error:
+                self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+            except Exception as error:  # noqa: BLE001
+                LOG.warning("image model connection test failed: %s", type(error).__name__)
+                self._json({"error": str(error)}, HTTPStatus.BAD_GATEWAY)
+                return
+            self._json({"ok": True, **result})
+            return
         if path.startswith("/api/admin/invites/") and path.endswith("/revoke"):
             if not self._require_admin():
                 return
@@ -1079,6 +1453,34 @@ class YingbanHandler(BaseHTTPRequestHandler):
                 self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
                 return
             self._json({"code": code})
+            return
+        if path.startswith("/api/admin/invites/") and path.endswith("/code"):
+            if not self._require_admin():
+                return
+            invite_id = unquote(
+                path.removeprefix("/api/admin/invites/").removesuffix("/code")
+            ).strip("/")
+            try:
+                code = self.app.store.invite_code_for_admin(invite_id)
+            except InviteError as error:
+                self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+            self._json({"code": code})
+            return
+        if path.startswith("/api/admin/invites/") and path.endswith("/note"):
+            if not self._require_admin():
+                return
+            invite_id = unquote(
+                path.removeprefix("/api/admin/invites/").removesuffix("/note")
+            ).strip("/")
+            try:
+                invite = self.app.store.update_invite_note(
+                    invite_id, str(payload.get("note", ""))
+                )
+            except (InviteError, ValueError) as error:
+                self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+            self._json({"invite": invite})
             return
 
         self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
@@ -1161,6 +1563,13 @@ class YingbanHandler(BaseHTTPRequestHandler):
             )
             return
 
+        requested_skill_key = str(payload.get("skill_key", "")).strip() or None
+        try:
+            active_skill = self.app.agent.resolve_skill(mode, requested_skill_key, message)
+        except ValueError as error:
+            self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
         selected_movie: dict[str, Any] | None = None
         memory_event: dict[str, Any] | None = None
         selected_id = str(payload.get("selected_movie_id", ""))
@@ -1192,16 +1601,18 @@ class YingbanHandler(BaseHTTPRequestHandler):
                 return
 
         if mode == "discussion" and selected_movie is not None:
-            self.app.store.set_movie_state(
+            _state, watched_changed = self.app.store.transition_movie_state(
                 account_id, selected_movie["id"], "watched", "discussion"
             )
-            memory_event = {
-                "type": "watched",
-                "message": f"已把《{selected_movie['title_zh']}》加入看过列表",
-                "movie_id": selected_movie["id"],
-            }
+            if watched_changed:
+                memory_event = {
+                    "type": "watched",
+                    "message": f"已把《{selected_movie['title_zh']}》加入看过列表",
+                    "movie_id": selected_movie["id"],
+                }
 
         candidates: list[dict[str, Any]] = []
+        candidate_scope = "none"
         if mode == "recommendation":
             self.app.store.record_product_event("recommendation_requested", account_id)
             retrieval_request = message
@@ -1215,16 +1626,36 @@ class YingbanHandler(BaseHTTPRequestHandler):
                     ):
                         retrieval_request = earlier + "\n本轮反馈：" + message
                         break
+            now_playing: list[dict[str, Any]] = []
             if self.app.internet is not None:
                 try:
-                    self.app.internet.discover_movies(retrieval_request)
+                    if active_skill and active_skill["skill_key"] == MOVIE_DECISION_SKILL:
+                        now_playing = self.app.internet.discover_now_playing(
+                            retrieval_request, str(payload.get("region", "CN"))
+                        )
+                    else:
+                        self.app.internet.discover_movies(retrieval_request)
                 except Exception as error:  # noqa: BLE001
                     LOG.warning("external movie discovery failed: %s", type(error).__name__)
-            candidates = self.app.catalog.recommend(account_id, retrieval_request, limit=3)
+            candidate_ids = {str(item["id"]) for item in now_playing} if now_playing else None
+            candidate_scope = "current_theatrical" if candidate_ids else "catalog_fallback"
+            candidates = self.app.catalog.recommend(
+                account_id, retrieval_request, limit=3, candidate_ids=candidate_ids
+            )
             if self.app.internet is not None:
                 candidates = self.app.internet.hydrate_movie_posters(candidates, limit=3)
 
+        agent_activity: dict[str, Any] = {}
         try:
+            respond_options: dict[str, Any] = {"activity": agent_activity}
+            if active_skill:
+                respond_options["skill_key"] = str(active_skill["skill_key"])
+            if mode == "recommendation":
+                respond_options["skill_runtime"] = {
+                    "candidate_scope": candidate_scope,
+                    "region": str(payload.get("region", "CN")),
+                    "information_time": datetime.now(UTC).date().isoformat(),
+                }
             reply = self.app.agent.respond(
                 account_id,
                 mode,
@@ -1233,6 +1664,7 @@ class YingbanHandler(BaseHTTPRequestHandler):
                 selected_movie,
                 spoilers_allowed,
                 candidates,
+                **respond_options,
             )
             reply = sanitize_agent_reply(reply)
         except Exception as error:  # noqa: BLE001
@@ -1250,6 +1682,21 @@ class YingbanHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if mode == "discussion" and selected_movie is None:
+            marked_movie = agent_activity.get("marked_movie")
+            marked_movie_id = str(marked_movie.get("id", "")) if isinstance(marked_movie, dict) else ""
+            if marked_movie_id:
+                selected_movie = self.app.store.movie(marked_movie_id)
+                if (
+                    selected_movie is not None
+                    and agent_activity.get("marked_movie_changed") is True
+                ):
+                    memory_event = {
+                        "type": "watched",
+                        "message": f"已把《{selected_movie['title_zh']}》加入看过列表",
+                        "movie_id": selected_movie["id"],
+                    }
+
         for movie in candidates:
             self.app.store.record_product_event(
                 "recommendation_impression", account_id,
@@ -1264,6 +1711,11 @@ class YingbanHandler(BaseHTTPRequestHandler):
             },
         )
 
+        active_skill_key = (
+            str(agent_activity["skill"].get("key", ""))
+            if isinstance(agent_activity.get("skill"), dict)
+            else ""
+        )
         self._json(
             {
                 "reply": reply,
@@ -1273,6 +1725,16 @@ class YingbanHandler(BaseHTTPRequestHandler):
                 "reflection_note": "",
                 "reflection_updated": False,
                 "reflection_draft_available": bool(mode == "discussion" and selected_movie),
+                "active_skill": agent_activity.get("skill"),
+                "skill_actions": {
+                    "can_save_content_draft": bool(
+                        selected_movie and active_skill_key == STRUCTURED_REVIEW_SKILL
+                    ),
+                    "can_save_cognition": bool(
+                        selected_movie and active_skill_key == VIEWING_COGNITION_SKILL
+                    ),
+                },
+                "candidate_scope": candidate_scope,
             }
         )
 
@@ -1282,7 +1744,8 @@ class YingbanHandler(BaseHTTPRequestHandler):
         return {
             "status": profile["onboarding_status"],
             "selected_count": len(selected),
-            "required_count": 5,
+            "required_count": 1,
+            "max_count": 5,
             "selected": [
                 {**public_movie(item), "sentiment": item["sentiment"]}
                 for item in selected
@@ -1313,6 +1776,115 @@ class YingbanHandler(BaseHTTPRequestHandler):
             {"movie_count": len(recommendation.get("movies", []))},
         )
         return {"status": recommendation.get("status", "ready"), "recommendation": recommendation}
+
+    def _daily_box_office_payload(self) -> dict[str, Any]:
+        if self.app.internet is None:
+            return {
+                "status": "unavailable",
+                "stale": False,
+                "business_date": "",
+                "updated_at": "",
+                "source": {
+                    "name": "中国电影数据信息网",
+                    "url": "https://www.zgdypw.cn/",
+                    "metric": "中国内地当日票房（万元）",
+                },
+                "movies": [],
+            }
+
+        snapshot = self.app.internet.daily_box_office(limit=3)
+        rankings = snapshot.get("rankings")
+        if not isinstance(rankings, list) or not rankings:
+            return {key: value for key, value in snapshot.items() if key != "rankings"} | {
+                "movies": []
+            }
+
+        titles = [str(item.get("title") or "") for item in rankings]
+        resolved = {
+            title: self._catalog_movie_with_exact_title(title)
+            for title in titles
+            if title
+        }
+        missing = [title for title in titles if title and resolved.get(title) is None]
+        if missing and snapshot.get("refreshed"):
+            try:
+                self.app.internet.discover_now_playing(
+                    "中国内地当前院线电影", region="CN", limit=20
+                )
+            except (RuntimeError, ValueError):
+                pass
+            for title in missing:
+                resolved[title] = self._catalog_movie_with_exact_title(title)
+
+        movies: list[dict[str, Any]] = []
+        business_date = str(snapshot.get("business_date") or "")
+        for item in rankings:
+            title = str(item.get("title") or "")
+            if not title:
+                continue
+            movie = resolved.get(title) or self._create_box_office_movie(
+                title, int(item.get("rank") or 9999), business_date
+            )
+            movies.append(
+                {
+                    **public_movie(movie),
+                    "box_office": {
+                        "rank": int(item.get("rank") or 0),
+                        "day_box_office_wan": float(
+                            item.get("day_box_office_wan") or 0
+                        ),
+                        "cumulative_box_office_wan": float(
+                            item.get("cumulative_box_office_wan") or 0
+                        ),
+                        "sessions": int(item.get("sessions") or 0),
+                        "audience": int(item.get("audience") or 0),
+                    },
+                }
+            )
+        movies = self.app.internet.hydrate_movie_posters(movies, limit=3)
+        return {key: value for key, value in snapshot.items() if key != "rankings"} | {
+            "movies": movies[:3]
+        }
+
+    def _catalog_movie_with_exact_title(self, title: str) -> dict[str, Any] | None:
+        expected = normalize(title)
+        for movie in self.app.catalog.search(title, limit=12):
+            names = [
+                movie.get("title_zh"),
+                movie.get("title_original"),
+                *(movie.get("aliases") or []),
+            ]
+            if expected and expected in {normalize(str(name or "")) for name in names}:
+                return movie
+        return None
+
+    def _create_box_office_movie(
+        self, title: str, rank: int, business_date: str
+    ) -> dict[str, Any]:
+        movie_id = "cn-box-office-" + hashlib.sha256(title.encode("utf-8")).hexdigest()[:16]
+        summary = f"{business_date} 中国内地当日票房第 {rank} 名。"
+        record = {
+            "id": movie_id,
+            "title_zh": title,
+            "title_original": title,
+            "aliases": [],
+            "year": 0,
+            "directors": [],
+            "regions": ["中国大陆"],
+            "genres": [],
+            "themes": [],
+            "moods": ["院线热映"],
+            "content_notes": [],
+            "summary": summary,
+            "popularity_rank": max(1, rank),
+            "source": "china-film-data",
+            "poster_url": "",
+            "source_url": "https://www.zgdypw.cn/",
+            "external_ids": {},
+            "release_date": "",
+        }
+        self.app.store.upsert_movies([record])
+        return self.app.store.movie(movie_id) or record
 
     def _generate_weekly_recommendation(
         self, account_id: str, *, direction: str = "", replace: bool = False
@@ -1522,6 +2094,7 @@ class YingbanHandler(BaseHTTPRequestHandler):
                     ),
                     "",
                 ),
+                account_id,
             )
             if not draft or draft == str(base.get("content", "")):
                 raise ValueError("这次还没有足够的新电影感受可整理")
@@ -1745,6 +2318,15 @@ class YingbanHandler(BaseHTTPRequestHandler):
             self.send_header("Set-Cookie", cookie)
         self.end_headers()
         self.wfile.write(body)
+
+    def _binary(self, content: bytes, content_type: str, cache_control: str) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", cache_control)
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(content)
 
 
 class YingbanHTTPServer(ThreadingHTTPServer):

@@ -26,23 +26,56 @@ def _load_local_env() -> None:
 
 _load_local_env()
 
+
+def _first_nonempty_env(*names: str) -> str:
+    for name in names:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+    return ""
+
+
 _LEGACY_BRAVE_ENV = bool(
     os.getenv("BRAVE_SEARCH_API_KEY") or os.getenv("BRAVE_SEARCH_BASE_URL")
 )
 _DEFAULT_WEB_SEARCH_PROVIDER = os.getenv(
-    "WEB_SEARCH_PROVIDER", "brave" if _LEGACY_BRAVE_ENV else "tavily"
+    "WEB_SEARCH_PROVIDER", "brave" if _LEGACY_BRAVE_ENV else "bocha"
 )
+_PROVIDER_API_KEYS = {
+    "bocha": os.getenv("BOCHA_API_KEY", ""),
+    "tavily": os.getenv("TAVILY_API_KEY", ""),
+    "brave": os.getenv("BRAVE_SEARCH_API_KEY", ""),
+}
+_PROVIDER_BASE_URLS = {
+    "bocha": os.getenv("BOCHA_BASE_URL", "https://api.bochaai.com/v1"),
+    "tavily": os.getenv("TAVILY_BASE_URL", "https://api.tavily.com"),
+    "brave": os.getenv(
+        "BRAVE_SEARCH_BASE_URL", "https://api.search.brave.com/res/v1"
+    ),
+}
 _DEFAULT_WEB_SEARCH_API_KEY = os.getenv(
     "WEB_SEARCH_API_KEY",
-    os.getenv("BRAVE_SEARCH_API_KEY", "")
-    if _DEFAULT_WEB_SEARCH_PROVIDER == "brave"
-    else "",
+    _PROVIDER_API_KEYS.get(_DEFAULT_WEB_SEARCH_PROVIDER, ""),
 )
 _DEFAULT_WEB_SEARCH_BASE_URL = os.getenv(
     "WEB_SEARCH_BASE_URL",
-    os.getenv("BRAVE_SEARCH_BASE_URL", "https://api.search.brave.com/res/v1")
-    if _DEFAULT_WEB_SEARCH_PROVIDER == "brave"
-    else "https://api.tavily.com",
+    _PROVIDER_BASE_URLS.get(
+        _DEFAULT_WEB_SEARCH_PROVIDER, "https://api.bochaai.com/v1"
+    ),
+)
+_DEFAULT_MODEL_PROVIDER = os.getenv("MODEL_PROVIDER", "anthropic")
+_DEFAULT_MODEL_ID = os.getenv(
+    "MODEL_ID",
+    "step-3.5-flash-2603" if _DEFAULT_MODEL_PROVIDER == "stepfun" else "claude-sonnet-4-6",
+)
+_DEFAULT_MODEL_BASE_URL = os.getenv(
+    "MODEL_BASE_URL",
+    os.getenv(
+        "ANTHROPIC_BASE_URL",
+        "https://api.stepfun.com/step_plan/v1"
+        if _DEFAULT_MODEL_PROVIDER == "stepfun"
+        else "https://api.anthropic.com",
+    ),
 )
 
 
@@ -57,10 +90,17 @@ def _bool_env(name: str, default: bool = False) -> bool:
 class Settings:
     base_dir: Path = BASE_DIR
     host: str = os.getenv("YINGBAN_HOST", "127.0.0.1")
-    port: int = int(os.getenv("YINGBAN_PORT", "8765"))
+    # Managed platforms such as Railway inject PORT and use it for health checks.
+    # Keep YINGBAN_PORT as the local fallback for backwards compatibility.
+    port: int = int(os.getenv("PORT", os.getenv("YINGBAN_PORT", "8765")))
     database_path: Path = Path(
         os.getenv("YINGBAN_DATABASE", str(BASE_DIR / "data" / "yingban.db"))
     )
+    sqlite_journal_mode: str = os.getenv(
+        "YINGBAN_SQLITE_JOURNAL_MODE", "WAL"
+    ).strip().upper()
+    sqlite_vfs: str = os.getenv("YINGBAN_SQLITE_VFS", "").strip()
+    database_mount: str = os.getenv("YINGBAN_DATABASE_MOUNT", "").strip()
     movie_seed_path: Path = Path(
         os.getenv("YINGBAN_MOVIES", str(BASE_DIR / "data" / "movies.json"))
     )
@@ -74,11 +114,12 @@ class Settings:
     admin_token: str = os.getenv("YINGBAN_ADMIN_TOKEN", "")
     cookie_secure: bool = _bool_env("YINGBAN_COOKIE_SECURE", False)
     session_days: int = int(os.getenv("YINGBAN_SESSION_DAYS", "30"))
-    model_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
-    model_id: str = os.getenv("MODEL_ID", "claude-sonnet-4-6")
-    model_base_url: str = os.getenv(
-        "ANTHROPIC_BASE_URL", "https://api.anthropic.com"
-    ).rstrip("/")
+    model_provider: str = _DEFAULT_MODEL_PROVIDER
+    model_api_key: str = _first_nonempty_env(
+        "MODEL_API_KEY", "ANTHROPIC_API_KEY", "STEPFUN_API_KEY"
+    )
+    model_id: str = _DEFAULT_MODEL_ID
+    model_base_url: str = _DEFAULT_MODEL_BASE_URL.rstrip("/")
     model_timeout_seconds: float = float(os.getenv("MODEL_TIMEOUT_SECONDS", "60"))
     tmdb_api_key: str = os.getenv("TMDB_API_KEY", "")
     tmdb_base_url: str = os.getenv(
@@ -95,7 +136,7 @@ class Settings:
         "WEB_READER_BASE_URL", "https://r.jina.ai"
     ).rstrip("/")
     voice_provider: str = os.getenv("VOICE_PROVIDER", "doubao")
-    voice_api_key: str = os.getenv("VOICE_API_KEY", "")
+    voice_api_key: str = _first_nonempty_env("VOICE_API_KEY", "STEPFUN_API_KEY")
     voice_app_id: str = os.getenv("VOICE_APP_ID", "")
     voice_access_token: str = os.getenv("VOICE_ACCESS_TOKEN", "")
     voice_base_url: str = os.getenv(
@@ -103,9 +144,19 @@ class Settings:
     ).rstrip("/")
     voice_stt_model: str = os.getenv("VOICE_STT_MODEL", "volc.bigasr.auc_turbo")
     voice_tts_model: str = os.getenv("VOICE_TTS_MODEL", "seed-tts-2.0")
+    voice_chat_model: str = os.getenv("VOICE_CHAT_MODEL", "stepaudio-2.5-chat")
+    voice_realtime_model: str = os.getenv(
+        "VOICE_REALTIME_MODEL", "stepaudio-2.5-realtime"
+    )
     voice_name: str = os.getenv("VOICE_NAME", "zh_female_xiaohe_uranus_bigtts")
     voice_audio_format: str = os.getenv("VOICE_AUDIO_FORMAT", "mp3")
     voice_timeout_seconds: float = float(os.getenv("VOICE_TIMEOUT_SECONDS", "60"))
+    image_api_key: str = _first_nonempty_env("IMAGE_API_KEY", "STEPFUN_API_KEY")
+    image_base_url: str = os.getenv(
+        "IMAGE_BASE_URL", "https://api.stepfun.com/step_plan/v1"
+    ).rstrip("/")
+    image_model: str = os.getenv("IMAGE_MODEL", "step-image-edit-2")
+    image_timeout_seconds: float = float(os.getenv("IMAGE_TIMEOUT_SECONDS", "60"))
 
     @property
     def demo_mode(self) -> bool:

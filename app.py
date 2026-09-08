@@ -5,10 +5,14 @@ import json
 import logging
 import sys
 
+import uvicorn
+
 from agent import AgentRuntime
 from catalog import MovieCatalog
+from fastapi_app import create_fastapi_app
 from integrations import InternetRuntime
-from server import AppContext, YingbanHTTPServer
+from image_models import ImageRuntime
+from server import AppContext
 from settings import Settings
 from storage import Store
 from voice import VoiceRuntime
@@ -16,11 +20,19 @@ from voice import VoiceRuntime
 
 def build_context(settings: Settings | None = None) -> AppContext:
     settings = settings or Settings()
-    store = Store(settings.database_path, settings.invite_pepper, settings.session_secret)
+    store = Store(
+        settings.database_path,
+        settings.invite_pepper,
+        settings.session_secret,
+        journal_mode=settings.sqlite_journal_mode,
+        vfs=settings.sqlite_vfs,
+        required_mount=settings.database_mount or None,
+    )
     catalog = MovieCatalog(store, settings.movie_seed_path)
     catalog.load_seed()
     internet = InternetRuntime(settings, store)
     voice = VoiceRuntime(settings, store)
+    image = ImageRuntime(settings, store)
     agent = AgentRuntime(settings, store, catalog, internet)
     return AppContext(
         settings=settings,
@@ -29,11 +41,11 @@ def build_context(settings: Settings | None = None) -> AppContext:
         agent=agent,
         internet=internet,
         voice=voice,
+        image=image,
     )
 
 
 def serve(app: AppContext) -> None:
-    server = YingbanHTTPServer((app.settings.host, app.settings.port), app)
     model_config = app.agent.model_config()
     mode = "演示 Agent" if model_config.demo_mode else f"模型 {model_config.model_id}"
     print(f"影伴已启动：http://{app.settings.host}:{app.settings.port}")
@@ -41,14 +53,16 @@ def serve(app: AppContext) -> None:
     print(f"当前模式：{mode}")
     print(f"联网电影：{'已接入' if app.internet and app.internet.config().movie_enabled else '未配置'}")
     print(f"语音交互：{'已接入' if app.voice and app.voice.config().enabled else '未配置'}")
+    print(f"图像模型：{'已接入' if app.image and app.image.config().enabled else '未配置'}")
     for warning in app.settings.security_warnings():
         print(f"[安全提醒] {warning}")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\n影伴已停止。")
-    finally:
-        server.server_close()
+    uvicorn.run(
+        create_fastapi_app(app),
+        host=app.settings.host,
+        port=app.settings.port,
+        log_level="info",
+        server_header=False,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

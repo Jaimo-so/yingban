@@ -12,6 +12,7 @@
     "moods": ["深沉", "震撼", "余韵"],
     "content_notes": ["战争与时代创伤", "暴力", "自伤相关内容"],
     "summary": "两位京剧演员在时代变迁与复杂关系中经历彼此牵连的一生。",
+    "poster_url": "https://image.tmdb.org/t/p/w500/vOEkLofQ8N1OdbGs5L87m7Plpw2.jpg",
     "popularity_rank": 1
   },
   {
@@ -27,6 +28,7 @@
     "moods": ["沉重", "克制", "有力量"],
     "content_notes": ["死亡", "时代创伤", "家庭失去"],
     "summary": "一个普通家庭在时代起伏中承受失去，并努力把日子继续过下去。",
+    "poster_url": "https://image.tmdb.org/t/p/w500/lYxJxcRQAoEHtz94ZMJyODiwh8S.jpg",
     "popularity_rank": 2
   },
   {
@@ -42,6 +44,7 @@
     "moods": ["热烈", "怀旧", "复杂"],
     "content_notes": ["青少年冲突", "性相关暗示"],
     "summary": "少年马小军在躁动的青春、友情和自我想象中回望一段不可靠的记忆。",
+    "poster_url": "https://image.tmdb.org/t/p/w500/rpgCbEXUxi1iKmSKZQ6RcJaoF6c.jpg",
     "popularity_rank": 3
   },
   {
@@ -57,6 +60,7 @@
     "moods": ["紧张", "冷峻", "压迫"],
     "content_notes": ["枪战", "死亡", "犯罪"],
     "summary": "分别潜伏在警方与黑帮中的两个人，在长期伪装中寻找自己的身份出口。",
+    "poster_url": "https://image.tmdb.org/t/p/w500/Apy624adTXc4prITxtcVbEdUPUm.jpg",
     "popularity_rank": 4
   },
   {
@@ -72,6 +76,7 @@
     "moods": ["轻松", "热闹", "荒诞"],
     "content_notes": ["犯罪行为", "轻度暴力"],
     "summary": "一块意外出现的翡翠，让保卫者和几路窃贼卷入不断错位的争夺。",
+    "poster_url": "https://image.tmdb.org/t/p/w500/4NVNv2sQKZKb1HtGExUqp3Ukd7f.jpg",
     "popularity_rank": 5
   },
   {
@@ -87,6 +92,7 @@
     "moods": ["爽快", "机锋", "荒诞"],
     "content_notes": ["枪战", "暴力", "死亡"],
     "summary": "冒名县长与地方豪强在鹅城展开一场充满算计、语言机锋和权力角逐的对抗。",
+    "poster_url": "https://image.tmdb.org/t/p/w500/p5KiZq5MtGExUhmgPbpwiGFzALt.jpg",
     "popularity_rank": 6
   },
   {
@@ -102,6 +108,7 @@
     "moods": ["现实", "感动", "有力量"],
     "content_notes": ["疾病", "死亡", "医疗困境"],
     "summary": "一个普通商贩因代购药物与病患相识，在利益和责任之间发生改变。",
+    "poster_url": "https://image.tmdb.org/t/p/w500/qrhEWQjR3AyMbyy5l3vFuwA576W.jpg",
     "popularity_rank": 7
   },
   {
@@ -117,6 +124,7 @@
     "moods": ["宏大", "紧张", "振奋"],
     "content_notes": ["灾难", "死亡", "高强度危机场面"],
     "summary": "人类推动地球离开太阳系，在漫长迁徙中的一次危机里共同寻找生路。",
+    "poster_url": "https://image.tmdb.org/t/p/w500/tXuQCgx69DxVgeTsU0TkruR3i9O.jpg",
     "popularity_rank": 8
   },
   {
@@ -132,6 +140,7 @@
     "moods": ["温暖", "催泪", "怀旧"],
     "content_notes": ["亲人离世", "悲伤"],
     "summary": "女儿意外回到母亲年轻的年代，想让母亲拥有更快乐的人生。",
+    "poster_url": "https://image.tmdb.org/t/p/w500/31W7qLEMqQKgdCeCtV9EbVi3bwG.jpg",
     "popularity_rank": 9
   },
   {
@@ -147,6 +156,7 @@
     "moods": ["沉静", "鼓舞", "有力量"],
     "content_notes": ["监狱暴力", "性暴力暗示", "自杀相关内容"],
     "summary": "一名被判终身监禁的银行家，在漫长岁月中守住希望并建立友谊。",
+    "poster_url": "https://image.tmdb.org/t/p/w500/iKZev9OgfklidO8AvdrYlwung2o.jpg",
     "popularity_rank": 10
   },
   {
@@ -162,6 +172,7 @@
     "moods": ["温暖", "感动", "鼓舞"],
     "content_notes": ["战争", "疾病", "死亡"],
     "summary": "阿甘以直接而坚定的方式穿过时代变化，也一直珍惜他爱的人。",
+    "poster_url": "https://image.tmdb.org/t/p/w500/pplybKImR7LKzSVzRylK6Cl4dzm.jpg",
     "popularity_rank": 11
   },
   {
@@ -177,6 +188,7 @@
     "moods": ["轻巧", "思考", "鼓舞"],
     "content_notes": ["监视与控制", "焦虑场面"],
     "summary": "一个人逐渐发现自己的日常生活可能是一场为全世界制作的节目。",
+    "poster_url": "https://image.tmdb.org/t/p/w500/nAnzFcqORitpwvRQPceIt4mcm8G.jpg",
     "popularity_rank": 12
   },
   {
@@ -192,6 +204,7 @@
     "moods": ["奇幻", "温暖", "治愈"],
     "content_notes": ["部分怪诞形象", "父母遇险"],
     "summary": "少女千寻进入神灵世界，在劳动、友谊和考验中寻找父母与自己的名字。",
+    "poster_url": "https://image.tmdb.org/t/p/w500/dnwMqbndJpOEhoVqjlMU9U7LFle.jpg",
     "popularity_rank": 13
   },
   {
@@ -207,6 +220,7 @@
     "moods": ["轻盈", "浪漫", "治愈"],
     "content_notes": ["少量性相关内容"],
     "summary": "住在巴黎的爱美丽用细小行动改变别人的生活，也逐渐面对自己的孤独。",
+    "poster_url": "https://image.tmdb.org/t/p/w500/acQikJ5DyqTcuDDBJnT8P9wv62r.jpg",
     "popularity_rank": 14
   },
   {
@@ -222,6 +236,7 @@
     "moods": ["温暖", "怀旧", "催泪"],
     "content_notes": ["死亡", "离别"],
     "summary": "成名导演因故人离世回望童年，以及电影院放映员带给他的电影启蒙。",
+    "poster_url": "https://image.tmdb.org/t/p/w500/myeMOuOLu9Z7MwRF9HU7p5L4cYB.jpg",
     "popularity_rank": 15
   },
   {
@@ -237,6 +252,7 @@
     "moods": ["真诚", "感动", "有力量"],
     "content_notes": ["童年创伤", "暴力", "心理咨询场景"],
     "summary": "拥有数学天赋的青年在关系和心理支持中逐渐面对过去，并选择自己的道路。",
+    "poster_url": "https://image.tmdb.org/t/p/w500/oAZXx2Zt8Ikrm3BpLMsXYHRabWM.jpg",
     "popularity_rank": 16
   },
   {
@@ -252,6 +268,7 @@
     "moods": ["轻松", "温暖", "有力量"],
     "content_notes": ["死亡", "自杀相关谈话", "药物"],
     "summary": "一个矛盾不断的家庭开着旧车横跨美国，陪小女儿参加选美比赛。",
+    "poster_url": "https://image.tmdb.org/t/p/w500/oS5czlQL6oEH2MWS9DPjBMXSMc4.jpg",
     "popularity_rank": 17
   },
   {
@@ -267,6 +284,7 @@
     "moods": ["艰难", "鼓舞", "有力量"],
     "content_notes": ["贫困", "无家可归", "家庭压力"],
     "summary": "一位父亲在经济困境中照顾儿子，并争取改变职业与生活的机会。",
+    "poster_url": "https://image.tmdb.org/t/p/w500/vxj2k0168d7K3pih7Aw6kqvvLcN.jpg",
     "popularity_rank": 18
   },
   {
@@ -282,6 +300,7 @@
     "moods": ["烧脑", "紧张", "震撼"],
     "content_notes": ["枪战", "死亡", "自杀相关情节"],
     "summary": "一支团队进入层层梦境，试图在人心中植入一个足以改变选择的想法。",
+    "poster_url": "https://image.tmdb.org/t/p/w500/89W962aAnPS3N3BdKgy2BvUhnCh.jpg",
     "popularity_rank": 19
   },
   {
@@ -297,6 +316,7 @@
     "moods": ["宏大", "感动", "震撼"],
     "content_notes": ["灾难", "死亡", "亲人分离"],
     "summary": "一位父亲离开濒临危机的地球，穿越星际寻找人类可能的新家园。",
+    "poster_url": "https://image.tmdb.org/t/p/w500/spQm5r317XPNHK1941ChWmqzkZs.jpg",
     "popularity_rank": 20
   },
   {
@@ -312,6 +332,7 @@
     "moods": ["轻松", "治愈", "感动"],
     "content_notes": ["儿童迷失", "悲伤情绪"],
     "summary": "女孩搬家后经历情绪失衡，她脑海中的情绪角色一起寻找新的平衡。",
+    "poster_url": "https://image.tmdb.org/t/p/w500/gN3qUaxucFWNTBDsaxkyCQSbox2.jpg",
     "popularity_rank": 21
   },
   {
@@ -327,6 +348,7 @@
     "moods": ["温暖", "治愈", "催泪"],
     "content_notes": ["死亡主题", "家庭冲突"],
     "summary": "热爱音乐的少年误入亡灵世界，在寻找归途时重新理解家族记忆。",
+    "poster_url": "https://image.tmdb.org/t/p/w500/vtgPOrShQFkDm1PWY3TKrPmlS5i.jpg",
     "popularity_rank": 22
   },
   {
@@ -342,6 +364,7 @@
     "moods": ["治愈", "思考", "轻盈"],
     "content_notes": ["死亡主题", "存在意义"],
     "summary": "一名爵士乐教师在意外之后重新思考梦想、目标与普通生活的价值。",
+    "poster_url": "https://image.tmdb.org/t/p/w500/yhyY94umEO1XkaxJAZJSMJk9hgt.jpg",
     "popularity_rank": 23
   },
   {
@@ -357,6 +380,7 @@
     "moods": ["紧凑", "思考", "克制"],
     "content_notes": ["谋杀案件讨论", "家庭暴力提及"],
     "summary": "十二名陪审员在一间屋里重新审视一桩看似明确的案件与各自的偏见。",
+    "poster_url": "https://image.tmdb.org/t/p/w500/tbhKU2naM5ItPO4ICdF2GKow9ik.jpg",
     "popularity_rank": 24
   }
 ]

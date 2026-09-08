@@ -8,6 +8,8 @@ const state = {
   currentConversationId: null,
   currentConversationCreatedAt: 0,
   restoredConversation: false,
+  returnToChatFromHistory: false,
+  conversationHistoryMovie: null,
   pendingConversationDeleteId: null,
   selectedMovieId: null,
   selectedMovie: null,
@@ -15,11 +17,13 @@ const state = {
   historyCursor: 0,
   historyNextCursor: null,
   accountHint: "guest",
-  weeklyEnabled: true,
   monthlyRecap: null,
   shareSource: null,
   shareCardId: null,
   sending: false,
+  chatAutoFollow: true,
+  chatScrollFrame: null,
+  chatScrollSettleTimer: null,
   voiceConfigured: false,
   voiceSupported: false,
   voiceMode: false,
@@ -36,6 +40,10 @@ const state = {
   onboardingStatus: "not_started",
   onboardingSelected: [],
   tasteProfile: null,
+  skills: [],
+  activeSkillKey: null,
+  lastSkillUserText: "",
+  lastSkillAssistantText: "",
   autoGenerateReflectionDrafts: true,
   recorder: null,
   recordingStream: null,
@@ -95,6 +103,14 @@ const localConversationStore = {
     } catch { return []; }
     return items.sort((left, right) => Number(right.updated_at) - Number(left.updated_at));
   },
+  listForMovie(movieId) {
+    const targetId = String(movieId || "");
+    if (!targetId) return [];
+    return this.list().filter((conversation) => {
+      const conversationMovieId = conversation.movie?.id || conversation.movie?.movie_id;
+      return String(conversationMovieId || "") === targetId;
+    });
+  },
   writeCurrent(input = "") {
     if (state.mode !== "discussion" || !state.currentConversationId) return;
     if (!state.chatHistory.length && !input.trim()) return;
@@ -110,6 +126,7 @@ const localConversationStore = {
         mode: "discussion",
         title: movie?.title_zh ? `《${movie.title_zh}》` : "尚未指定电影",
         movie,
+        skill_key: activeConversationSkillKey(),
         history: state.chatHistory.slice(-40),
         input: input.slice(0, 6000),
         spoilers_allowed: $("#spoilers-allowed").checked,
@@ -215,10 +232,9 @@ function showAuthenticated(me) {
   $("#mode-badge").hidden = !me.demo_mode;
   state.voiceConfigured = Boolean(me.voice_available);
   state.openings = { ...state.openings, ...(me.openings || {}) };
+  state.skills = Array.isArray(me.skills) ? me.skills : [];
   state.onboardingStatus = me.onboarding?.status || "not_started";
   state.autoGenerateReflectionDrafts = me.reflection_preferences?.auto_generate_drafts !== false;
-  state.weeklyEnabled = me.weekly_recommendations?.enabled !== false;
-  $("#weekly-enabled").checked = state.weeklyEnabled;
   $("#reflection-auto-generate").checked = state.autoGenerateReflectionDrafts;
   state.voiceSupported = Boolean(window.MediaRecorder && navigator.mediaDevices?.getUserMedia);
   const voiceButton = $("#voice-mode-button");
@@ -228,7 +244,6 @@ function showAuthenticated(me) {
   setVoiceMode(false);
   if (state.onboardingStatus === "completed") {
     navigate("home");
-    loadWeeklyRecommendation();
   }
   else openOnboarding();
 }
@@ -257,8 +272,25 @@ function navigate(view) {
     state.historyCursor = 0;
     loadHistory();
   }
-  if (view === "home") loadWeeklyRecommendation();
+  if (view === "home") loadDailyBoxOffice();
   window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function navigatePrimary(view) {
+  if (view === "history" && !$("#chat-view").hidden) {
+    localConversationStore.writeCurrent($("#chat-input")?.value || "");
+    state.returnToChatFromHistory = true;
+    navigate("history");
+    return;
+  }
+  if (view === "home" && state.returnToChatFromHistory) {
+    state.returnToChatFromHistory = false;
+    navigate("chat");
+    $("#chat-input").focus();
+    return;
+  }
+  state.returnToChatFromHistory = false;
+  navigate(view);
 }
 
 async function openOnboarding() {
@@ -276,28 +308,50 @@ async function loadOnboarding() {
 
 async function loadOnboardingCandidates(query = "") {
   const wrap = $("#onboarding-candidates");
+  const submit = $("#onboarding-search-form button[type='submit']");
+  const originalLabel = submit.textContent;
+  const loading = document.createElement("p");
+  loading.className = "empty-state";
+  loading.textContent = query ? "正在搜索电影…" : "正在加载候选电影…";
+  wrap.replaceChildren(loading);
   wrap.setAttribute("aria-busy", "true");
+  submit.disabled = true;
+  if (query) submit.textContent = "搜索中…";
   try {
     const data = await api(`/api/onboarding/candidates${query ? `?query=${encodeURIComponent(query)}` : ""}`);
     wrap.replaceChildren(...data.items.map(onboardingCandidate));
     if (!data.items.length) {
       const empty = document.createElement("p");
       empty.className = "empty-state";
-      empty.textContent = "没有找到这部电影，试试原名或别名。";
+      empty.textContent = data.search_status === "unavailable"
+        ? "电影搜索服务暂时不可用，请稍后重试。"
+        : "没有找到这部电影，试试完整片名、原名或别名。";
       wrap.append(empty);
     }
+  } catch (error) {
+    const failed = document.createElement("p");
+    failed.className = "empty-state";
+    failed.textContent = error.message || "电影搜索失败，请稍后重试。";
+    wrap.replaceChildren(failed);
+    showToast(failed.textContent);
   } finally {
     wrap.removeAttribute("aria-busy");
+    submit.disabled = false;
+    submit.textContent = originalLabel;
   }
 }
 
 function onboardingCandidate(movie) {
   const card = document.createElement("article");
   card.className = "onboarding-movie";
-  card.append(posterNode(movie));
   const button = document.createElement("button");
   button.type = "button";
-  button.textContent = "选这部";
+  button.className = "onboarding-movie-select";
+  button.setAttribute("aria-label", `选择《${movie.title_zh}》`);
+  const label = document.createElement("span");
+  label.className = "onboarding-movie-select-label";
+  label.textContent = "选这部";
+  button.append(posterNode(movie), label);
   button.disabled = state.onboardingSelected.length >= 5;
   button.addEventListener("click", async () => {
     button.disabled = true;
@@ -320,10 +374,10 @@ function onboardingCandidate(movie) {
 function renderOnboardingSelected() {
   const count = state.onboardingSelected.length;
   $("#onboarding-count").textContent = `${count}/5`;
-  $("#onboarding-remaining").textContent = count === 5 ? "可以生成初始画像" : `还需要 ${5 - count} 部`;
+  $("#onboarding-remaining").textContent = count >= 1 ? "可以生成初始画像，最多选 5 部" : "至少选择 1 部";
   const complete = $("#onboarding-complete");
-  complete.disabled = count !== 5;
-  complete.textContent = count === 5 ? "生成我的初始口味" : `还需要选择 ${5 - count} 部电影`;
+  complete.disabled = count < 1 || count > 5;
+  complete.textContent = count >= 1 ? "生成我的初始口味" : "请至少选择 1 部电影";
   $("#onboarding-selected").replaceChildren(...state.onboardingSelected.map((movie, index) => {
     const item = document.createElement("li");
     item.className = "selected-movie";
@@ -365,7 +419,7 @@ function renderOnboardingSelected() {
 async function completeOnboarding() {
   const button = $("#onboarding-complete");
   button.disabled = true;
-  $("#onboarding-status").textContent = "正在根据这 5 部电影整理可见口味…";
+  $("#onboarding-status").textContent = `正在根据这 ${state.onboardingSelected.length} 部电影整理可见口味…`;
   try {
     const data = await api("/api/onboarding/complete", { method: "POST", body: "{}" });
     state.onboardingStatus = "completed";
@@ -416,6 +470,98 @@ async function openTasteProfile() {
   if (!dialog.open) dialog.showModal();
 }
 
+function enabledSkill(skillKey) {
+  return state.skills.find((skill) => skill.key === skillKey && skill.enabled !== false) || null;
+}
+
+function activeConversationSkillKey() {
+  const skill = enabledSkill(state.activeSkillKey);
+  return state.mode === "discussion" && skill?.module === "discussion" ? skill.key : null;
+}
+
+async function requestChat(payload) {
+  try {
+    return await api("/api/chat", { method: "POST", body: JSON.stringify(payload) });
+  } catch (error) {
+    const staleSkill = payload.skill_key
+      && error.status === 400
+      && error.message === "请求的 Skill 不存在、已停用或不属于当前模块";
+    if (!staleSkill) throw error;
+    state.activeSkillKey = null;
+    localConversationStore.writeCurrent("");
+    renderSkillToolbar();
+    showToast("原对话 Skill 已不可用，已切换到自由聊电影");
+    return api("/api/chat", {
+      method: "POST",
+      body: JSON.stringify({ ...payload, skill_key: null }),
+    });
+  }
+}
+
+async function syncConversationRecord() {
+  if (
+    state.mode !== "discussion"
+    || !state.currentConversationId
+    || !state.selectedMovieId
+    || !state.chatHistory.length
+  ) return;
+  await api("/api/conversations/sync", {
+    method: "POST",
+    body: JSON.stringify({
+      conversation_id: state.currentConversationId,
+      movie_id: state.selectedMovieId,
+      messages: state.chatHistory.slice(-40),
+      skill_key: activeConversationSkillKey(),
+    }),
+  });
+}
+
+function renderSkillToolbar() {
+  const toolbar = $("#skill-toolbar");
+  if (!toolbar) return;
+  const active = enabledSkill(state.activeSkillKey);
+  const discussion = state.mode === "discussion";
+  $("#discussion-skill-actions").hidden = !discussion;
+  $("#clear-active-skill").hidden = !discussion || !active;
+  $("#view-skill-records").hidden = !(
+    discussion && active?.key === "viewing_cognition_archive" && state.selectedMovie
+  );
+  $$('[data-activate-skill]').forEach((button) => {
+    const skill = enabledSkill(button.dataset.activateSkill);
+    button.hidden = !discussion || !skill;
+    button.setAttribute("aria-pressed", String(active?.key === skill?.key));
+  });
+  if (active) {
+    $("#active-skill-name").textContent = `${active.name} · v${active.active_version}`;
+    $("#active-skill-description").textContent = active.description;
+    return;
+  }
+  $("#active-skill-name").textContent = discussion ? "自由聊电影" : "常规选片";
+  $("#active-skill-description").textContent = discussion
+    ? "普通聊天不会自动生成或保存正式内容。"
+    : "院线新片 Skill 已停用，当前使用基础推荐能力。";
+}
+
+function activateSkill(skillKey) {
+  const skill = enabledSkill(skillKey);
+  if (!skill || skill.module !== state.mode) {
+    showToast("这个 Skill 当前不可用");
+    return;
+  }
+  state.activeSkillKey = skill.key;
+  localConversationStore.writeCurrent($("#chat-input")?.value || "");
+  renderSkillToolbar();
+  if (skill.key === "structured_review_creation") {
+    renderChips(["把刚才这些感受整理成小红书观后内容", "整理成一篇个人正式影评", "按影视宣推内容继续整理"]);
+    $("#chat-input").placeholder = "继续补充零散感受，或说明平台、受众和篇幅……";
+  } else if (skill.key === "viewing_cognition_archive") {
+    renderChips(["这是我第二次看，想记录这次的变化", "和上一次相比，我注意到了不同的人物", "先整理成本次观看最明确的认识"]);
+    $("#chat-input").placeholder = "说说这是第几次观看，以及这次新注意到什么……";
+  }
+  $("#chat-input").focus({ preventScroll: true });
+  showToast(`已切换到“${skill.name}”`);
+}
+
 async function openChat(mode, movie = null, options = {}) {
   if (state.currentConversationId) {
     localConversationStore.writeCurrent($("#chat-input")?.value || "");
@@ -423,15 +569,24 @@ async function openChat(mode, movie = null, options = {}) {
   try {
     const me = await api("/api/me");
     state.openings = { ...state.openings, ...(me.openings || {}) };
+    state.skills = Array.isArray(me.skills) ? me.skills : state.skills;
   } catch { /* keep the last known openings */ }
   const restored = options.conversation || null;
+  const restoredSkill = enabledSkill(restored?.skill_key);
+  state.returnToChatFromHistory = false;
   state.mode = mode;
+  state.activeSkillKey = mode === "recommendation" && enabledSkill("movie_decision_support")
+    ? "movie_decision_support"
+    : (restoredSkill?.module === mode ? restoredSkill.key : null);
+  state.lastSkillUserText = "";
+  state.lastSkillAssistantText = "";
   state.chatHistory = restored?.history ? [...restored.history] : [];
   state.currentConversationId = mode === "discussion"
     ? (restored?.id || localConversationStore.newId())
     : null;
   state.currentConversationCreatedAt = Number(restored?.created_at || Date.now());
   state.restoredConversation = Boolean(restored);
+  state.chatAutoFollow = true;
   state.selectedMovie = restored?.movie || movie;
   state.selectedMovieId = state.selectedMovie?.id || state.selectedMovie?.movie_id || null;
   $("#reflection-generate-button").hidden = !(mode === "discussion" && state.selectedMovie);
@@ -439,6 +594,7 @@ async function openChat(mode, movie = null, options = {}) {
   $("#chat-history-button").hidden = mode !== "discussion";
   $("#chat-messages").replaceChildren();
   $("#spoiler-control").hidden = mode !== "discussion";
+  renderSkillToolbar();
 
   const discussion = mode === "discussion";
   $("#chat-kicker").textContent = discussion ? "散场之后" : "下一部电影";
@@ -453,11 +609,16 @@ async function openChat(mode, movie = null, options = {}) {
     ? (state.selectedMovie ? state.openings.discussion_movie.replaceAll("{movie}", state.selectedMovie.title_zh) : state.openings.discussion)
     : state.openings.recommendation;
   if (restored) {
-    if (state.chatHistory.length) state.chatHistory.forEach((item) => renderMessage(item.role, item.content));
+    if (state.chatHistory.length) state.chatHistory.forEach((item) => {
+      const message = renderMessage(item.role, item.content);
+      if (item.role === "assistant" && state.voiceConfigured) {
+        attachVoiceReply(message, item.content, { lazy: true });
+      }
+    });
     else renderMessage("assistant", opening);
     $("#chat-input").value = restored.input || "";
     $("#spoilers-allowed").checked = restored.spoilers_allowed !== false;
-    $("#chat-draft-message").textContent = `正在查看 ${restored.title || "这段"} 历史对话；新的内容仍只保存在此设备 7 天。`;
+    $("#chat-draft-message").textContent = `正在查看 ${restored.title || "这段"} 历史对话；本机副本保留 7 天，绑定电影后的消息会同步到服务端供管理员查看。`;
     $("#chat-draft-clear").textContent = "开始新对话";
     $("#chat-draft-notice").hidden = false;
   } else {
@@ -467,7 +628,8 @@ async function openChat(mode, movie = null, options = {}) {
     $("#chat-draft-notice").hidden = true;
   }
   autoResize($("#chat-input"));
-  $("#chat-input").focus();
+  $("#chat-input").focus({ preventScroll: true });
+  scrollChatToLatest({ behavior: "auto", force: true });
 }
 
 function conversationHistoryItem(conversation) {
@@ -518,23 +680,29 @@ function conversationHistoryItem(conversation) {
   return item;
 }
 
-function renderConversationHistory() {
+function renderConversationHistory(movie = state.conversationHistoryMovie) {
   const list = $("#conversation-history-list");
-  const items = localConversationStore.list();
+  const movieId = movie?.id || movie?.movie_id || null;
+  const items = movieId ? localConversationStore.listForMovie(movieId) : localConversationStore.list();
   list.replaceChildren();
-  $("#conversation-history-count").textContent = items.length ? `当前设备保存了 ${items.length} 段对话` : "当前设备还没有历史对话";
+  $("#conversation-history-title").textContent = movie ? `《${movie.title_zh}》的聊天记录` : "历史对话";
+  $("#conversation-history-count").textContent = items.length
+    ? `当前设备保存了 ${items.length} 段${movie ? "相关" : ""}对话`
+    : (movie ? `当前设备还没有《${movie.title_zh}》的聊天记录` : "当前设备还没有历史对话");
   if (!items.length) {
     const empty = document.createElement("div");
     empty.className = "conversation-history-empty";
     const text = document.createElement("p");
-    text.textContent = "从一部刚看完的电影开始，聊过的内容会在这里保留 7 天。";
+    text.textContent = movie
+      ? `从“我的电影”继续聊《${movie.title_zh}》；本机历史保留 7 天，消息会同步到服务端供管理员查看。`
+      : "从一部刚看完的电影开始；本机历史保留 7 天，确认电影后的消息会同步到服务端。";
     const start = document.createElement("button");
     start.type = "button";
     start.className = "button button-primary";
-    start.textContent = "开始新的聊电影";
+    start.textContent = movie ? `新聊《${movie.title_zh}》` : "开始新的聊电影";
     start.addEventListener("click", () => {
       $("#conversation-history-dialog").close();
-      openChat("discussion");
+      openChat("discussion", movie);
     });
     empty.append(text, start);
     list.append(empty);
@@ -543,9 +711,10 @@ function renderConversationHistory() {
   list.append(...items.map(conversationHistoryItem));
 }
 
-function openConversationHistory() {
+function openConversationHistory(movie = null) {
   localConversationStore.writeCurrent($("#chat-input")?.value || "");
-  renderConversationHistory();
+  state.conversationHistoryMovie = movie;
+  renderConversationHistory(movie);
   $("#conversation-history-dialog").showModal();
 }
 
@@ -563,6 +732,39 @@ function renderChips(items) {
     });
     return button;
   }));
+}
+
+function isChatNearBottom() {
+  const chatView = $("#chat-view");
+  if (!chatView || chatView.hidden) return false;
+  const composerHeight = chatView.querySelector(".composer-wrap")?.offsetHeight || 0;
+  const distance = document.documentElement.scrollHeight - (window.scrollY + window.innerHeight);
+  return distance <= composerHeight + 96;
+}
+
+function scrollChatToLatest({ behavior = "smooth", force = false } = {}) {
+  const chatView = $("#chat-view");
+  if (!chatView || chatView.hidden) return;
+  if (!force && !state.chatAutoFollow && !isChatNearBottom()) return;
+  state.chatAutoFollow = true;
+  if (state.chatScrollFrame) cancelAnimationFrame(state.chatScrollFrame);
+  state.chatScrollFrame = requestAnimationFrame(() => {
+    state.chatScrollFrame = requestAnimationFrame(() => {
+      const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+      window.scrollTo({
+        top: document.documentElement.scrollHeight,
+        behavior: reducedMotion ? "auto" : behavior,
+      });
+      state.chatScrollFrame = null;
+    });
+  });
+}
+
+function pauseChatAutoFollow(event) {
+  if ($("#chat-view")?.hidden) return;
+  if (event.type === "wheel" && event.deltaY >= 0) return;
+  if (event.type === "keydown" && !["ArrowUp", "PageUp", "Home"].includes(event.key)) return;
+  state.chatAutoFollow = false;
 }
 
 function renderMessage(role, text, loading = false, options = {}) {
@@ -596,7 +798,7 @@ function renderMessage(role, text, loading = false, options = {}) {
   }
   message.append(bubble);
   $("#chat-messages").append(message);
-  message.scrollIntoView({ behavior: "smooth", block: "end" });
+  scrollChatToLatest({ behavior: options.scrollBehavior || "smooth" });
   return message;
 }
 
@@ -689,7 +891,7 @@ function renderRecommendations(movies) {
     row.append(card);
   });
   $("#chat-messages").append(row);
-  row.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  scrollChatToLatest();
 }
 
 async function sendRecommendationFeedback(movie, action) {
@@ -721,11 +923,219 @@ function miniButton(label, action) {
   return button;
 }
 
+function renderSkillArtifactActions(messageNode, data) {
+  const actions = document.createElement("div");
+  actions.className = "skill-artifact-actions";
+  if (data.skill_actions?.can_save_content_draft) {
+    actions.append(miniButton("预览并保存内容草稿", () => {
+      if (!state.selectedMovie) throw new Error("先确认具体电影，再保存内容草稿");
+      return openContentDraftEditor(data.reply, state.lastSkillUserText);
+    }));
+  }
+  if (data.skill_actions?.can_save_cognition) {
+    actions.append(miniButton("确认并保存本次认识", () => {
+      if (!state.selectedMovie) throw new Error("先确认具体电影，再保存阶段认知");
+      return openCognitionEditor(data.reply, state.lastSkillUserText);
+    }));
+  }
+  if (actions.childElementCount) messageNode.querySelector(".message-bubble")?.append(actions);
+}
+
+const contentSceneLabels = {
+  xiaohongshu: "小红书观后内容",
+  formal_review: "个人正式影评",
+  promotion: "影视宣推内容",
+};
+
+async function loadContentDrafts() {
+  const movieId = state.selectedMovie?.id || state.selectedMovie?.movie_id;
+  if (!movieId) return;
+  const data = await api(`/api/content-drafts?movie_id=${encodeURIComponent(movieId)}`);
+  const list = $("#saved-content-drafts");
+  list.replaceChildren();
+  if (!data.items.length) return;
+  const heading = document.createElement("h3");
+  heading.textContent = "已保存版本";
+  list.append(heading);
+  data.items.forEach((draft) => {
+    const item = document.createElement("article");
+    item.className = "skill-record";
+    const head = document.createElement("div");
+    head.className = "skill-record-head";
+    const title = document.createElement("h3");
+    title.textContent = `${contentSceneLabels[draft.content_scene] || draft.content_scene} · 第 ${draft.version} 版`;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "text-button danger-text";
+    remove.textContent = "删除";
+    remove.addEventListener("click", async () => {
+      await api(`/api/content-drafts/${encodeURIComponent(draft.id)}`, { method: "DELETE" });
+      await loadContentDrafts();
+      showToast("内容草稿已删除");
+    });
+    head.append(title, remove);
+    const body = document.createElement("p");
+    body.textContent = draft.content.length > 320 ? `${draft.content.slice(0, 320)}…` : draft.content;
+    item.append(head, body);
+    list.append(item);
+  });
+}
+
+async function openContentDraftEditor(content = "", sourceMaterial = "") {
+  if (!state.selectedMovie) throw new Error("先确认具体电影，再保存内容草稿");
+  $("#content-draft-title").textContent = `《${state.selectedMovie.title_zh}》内容草稿`;
+  $("#content-draft-text").value = content || state.lastSkillAssistantText;
+  $("#content-source-material").value = sourceMaterial || state.lastSkillUserText;
+  $("#content-draft-status").textContent = "";
+  await loadContentDrafts();
+  $("#content-draft-dialog").showModal();
+}
+
+async function saveContentDraft() {
+  const movieId = state.selectedMovie?.id || state.selectedMovie?.movie_id;
+  if (!movieId) throw new Error("先确认具体电影");
+  const result = await api("/api/content-drafts", {
+    method: "POST",
+    body: JSON.stringify({
+      movie_id: movieId,
+      content_scene: $("#content-scene").value,
+      content: $("#content-draft-text").value,
+      source_material: $("#content-source-material").value,
+    }),
+  });
+  $("#content-draft-status").textContent = `已保存第 ${result.items[0]?.version || "新"} 版；没有自动发布。`;
+  await loadContentDrafts();
+}
+
+const cognitionStageLabels = {
+  first_impression: "散场即刻",
+  post_discussion: "交流之后",
+  revisit: "隔期回看",
+  rewatch: "重看之后",
+  retrospective: "长期回顾",
+};
+
+function renderCognitionBundle(data) {
+  const records = $("#cognition-records");
+  records.replaceChildren();
+  if (data.entries.length) {
+    const heading = document.createElement("h3");
+    heading.textContent = "同一作品的阶段记录";
+    records.append(heading);
+  }
+  data.entries.slice().reverse().forEach((entry) => {
+    const item = document.createElement("article");
+    item.className = "skill-record";
+    const head = document.createElement("div");
+    head.className = "skill-record-head";
+    const title = document.createElement("h3");
+    title.textContent = `第 ${entry.viewing_round} 次 · ${cognitionStageLabels[entry.stage] || entry.stage}`;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "text-button danger-text";
+    remove.textContent = "删除";
+    remove.addEventListener("click", async () => {
+      await api(`/api/cognition/entries/${encodeURIComponent(entry.id)}`, { method: "DELETE" });
+      await openCognitionEditor($("#cognition-synthesis").value, $("#cognition-raw").value, false);
+      showToast("阶段认知已删除");
+    });
+    head.append(title, remove);
+    const meta = document.createElement("p");
+    meta.textContent = [entry.watched_at, entry.edition, ...(entry.dimensions || [])].filter(Boolean).join(" · ");
+    const body = document.createElement("p");
+    body.textContent = entry.synthesis;
+    item.append(head, meta, body);
+    records.append(item);
+  });
+  const comparison = $("#cognition-comparison");
+  comparison.replaceChildren();
+  comparison.hidden = !data.comparison;
+  if (data.comparison) {
+    const title = document.createElement("h3");
+    title.textContent = `第 ${data.comparison.previous_round} 次 → 第 ${data.comparison.current_round} 次`;
+    const prior = document.createElement("p");
+    prior.textContent = `上次：${data.comparison.previous_synthesis}`;
+    const current = document.createElement("p");
+    current.textContent = `这次：${data.comparison.current_synthesis}`;
+    const dimensions = document.createElement("p");
+    dimensions.textContent = [
+      data.comparison.unchanged_dimensions.length ? `持续关注：${data.comparison.unchanged_dimensions.join("、")}` : "",
+      data.comparison.new_dimensions.length ? `新增注意：${data.comparison.new_dimensions.join("、")}` : "",
+      data.comparison.not_repeated_dimensions.length ? `本次未再次提到：${data.comparison.not_repeated_dimensions.join("、")}` : "",
+    ].filter(Boolean).join("；");
+    comparison.append(title, prior, current, dimensions);
+  }
+}
+
+async function openCognitionEditor(synthesis = "", rawImpression = "", openDialog = true) {
+  const movieId = state.selectedMovie?.id || state.selectedMovie?.movie_id;
+  if (!movieId) throw new Error("先确认具体电影，再保存阶段认知");
+  const data = await api(`/api/cognition/${encodeURIComponent(movieId)}`);
+  $("#cognition-title").textContent = `《${state.selectedMovie.title_zh}》阶段认知`;
+  const rounds = data.entries.map((entry) => Number(entry.viewing_round) || 0);
+  $("#cognition-round").value = Math.max(0, ...rounds) + 1;
+  $("#cognition-stage").value = data.entries.length ? "rewatch" : "first_impression";
+  $("#cognition-watched-at").value = new Date().toISOString().slice(0, 10);
+  if (synthesis) $("#cognition-synthesis").value = synthesis;
+  if (rawImpression) $("#cognition-raw").value = rawImpression;
+  $("#cognition-status").textContent = "";
+  renderCognitionBundle(data);
+  if (openDialog && !$("#cognition-dialog").open) $("#cognition-dialog").showModal();
+}
+
+async function saveCognitionEntry() {
+  const movieId = state.selectedMovie?.id || state.selectedMovie?.movie_id;
+  if (!movieId) throw new Error("先确认具体电影");
+  const dimensions = $("#cognition-dimensions").value
+    .split(/[、，,]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const result = await api(`/api/cognition/${encodeURIComponent(movieId)}`, {
+    method: "POST",
+    body: JSON.stringify({
+      viewing_round: Number($("#cognition-round").value),
+      stage: $("#cognition-stage").value,
+      watched_at: $("#cognition-watched-at").value,
+      edition: $("#cognition-edition").value,
+      raw_impression: $("#cognition-raw").value,
+      synthesis: $("#cognition-synthesis").value,
+      dimensions,
+    }),
+  });
+  $("#cognition-status").textContent = "本次观看已作为独立记录保存；旧记录没有被覆盖。";
+  renderCognitionBundle(result);
+}
+
+function choosePrimaryConversation(conversations) {
+  return conversations.reduce((best, candidate) => {
+    if (!best) return candidate;
+    const candidateUserTurns = (candidate.history || []).filter((entry) => entry.role === "user").length;
+    const bestUserTurns = (best.history || []).filter((entry) => entry.role === "user").length;
+    if (candidateUserTurns > bestUserTurns) return candidate;
+    if (candidateUserTurns < bestUserTurns) return best;
+    const candidateHistoryLength = (candidate.history || []).length;
+    const bestHistoryLength = (best.history || []).length;
+    if (candidateHistoryLength > bestHistoryLength) return candidate;
+    return best;
+  }, null);
+}
+
+function openPrimaryMovieConversation(movie) {
+  const movieId = movie?.id || movie?.movie_id;
+  const conversations = localConversationStore.listForMovie(movieId);
+  const primaryConversation = choosePrimaryConversation(conversations);
+  if (primaryConversation) {
+    return openChat("discussion", primaryConversation.movie || movie, { conversation: primaryConversation });
+  }
+  return openChat("discussion", movie);
+}
+
 async function sendMessage(forcedText = null, options = {}) {
   if (state.sending) return;
   const input = $("#chat-input");
   const text = (forcedText ?? input.value).trim();
   if (!text) return;
+  state.chatAutoFollow = true;
   const priorHistory = [...state.chatHistory];
   state.chatHistory.push({ role: "user", content: text });
   localConversationStore.writeCurrent("");
@@ -734,18 +1144,18 @@ async function sendMessage(forcedText = null, options = {}) {
   autoResize(input);
   $("#prompt-chips").replaceChildren();
   const loading = renderMessage("assistant", "", true);
+  scrollChatToLatest({ force: true });
   state.sending = true;
   $("#send-button").disabled = true;
   try {
-    const data = await api("/api/chat", {
-      method: "POST",
-      body: JSON.stringify({
-        mode: state.mode,
-        message: text,
-        history: priorHistory,
-        selected_movie_id: state.selectedMovieId,
-        spoilers_allowed: $("#spoilers-allowed").checked,
-      }),
+    const data = await requestChat({
+      mode: state.mode,
+      message: text,
+      history: priorHistory,
+      selected_movie_id: state.selectedMovieId,
+      spoilers_allowed: $("#spoilers-allowed").checked,
+      skill_key: state.activeSkillKey,
+      region: "CN",
     });
     loading.remove();
     if (data.selected_movie) {
@@ -757,7 +1167,19 @@ async function sendMessage(forcedText = null, options = {}) {
     }
     const assistantMessage = renderMessage("assistant", data.reply);
     state.chatHistory.push({ role: "assistant", content: data.reply });
+    if (data.active_skill?.key) {
+      state.activeSkillKey = data.active_skill.key;
+      state.lastSkillUserText = text;
+      state.lastSkillAssistantText = data.reply;
+      renderSkillToolbar();
+      renderSkillArtifactActions(assistantMessage, data);
+    }
     localConversationStore.writeCurrent("");
+    try {
+      await syncConversationRecord();
+    } catch {
+      showToast("对话已保存在此设备，后台记录同步失败");
+    }
     if (state.voiceConfigured) attachVoiceReply(assistantMessage, data.reply);
     renderRecommendations(data.recommendations);
     if (data.reflection_updated && data.selected_movie) {
@@ -774,7 +1196,7 @@ async function sendMessage(forcedText = null, options = {}) {
   } finally {
     state.sending = false;
     $("#send-button").disabled = false;
-    if (!state.voiceMode) input.focus();
+    if (!state.voiceMode) input.focus({ preventScroll: true });
   }
 }
 
@@ -790,48 +1212,65 @@ async function markMovie(movie, movieState, source) {
 
 async function refreshMe() {
   const me = await api("/api/me");
-  if (me.authenticated) $("#watched-count").textContent = me.account.watched_count;
-}
-
-async function loadWeeklyRecommendation() {
-  if (!state.authenticated || state.onboardingStatus !== "completed") return;
-  const card = $("#weekly-card");
-  try {
-    const data = await api("/api/weekly-recommendation");
-    if (["disabled", "dismissed"].includes(data.status)) {
-      card.hidden = true;
-      return;
-    }
-    card.hidden = false;
-    if (data.status === "needs_input") {
-      $("#weekly-reason").textContent = "还缺一个当下方向。告诉我这周想看得轻一点、热闹一点，或避开什么。";
-      $("#weekly-movies").replaceChildren();
-      return;
-    }
-    renderWeeklyRecommendation(data.recommendation);
-  } catch {
-    card.hidden = true;
+  if (me.authenticated) {
+    $("#watched-count").textContent = me.account.watched_count;
+    state.skills = Array.isArray(me.skills) ? me.skills : state.skills;
+    renderSkillToolbar();
   }
 }
 
-function renderWeeklyRecommendation(recommendation) {
-  $("#weekly-reason").textContent = recommendation?.reason_summary || "一份克制的本周建议。";
-  $("#weekly-movies").replaceChildren(...(recommendation?.movies || []).map((movie) => {
+async function loadDailyBoxOffice() {
+  if (!state.authenticated || state.onboardingStatus !== "completed") return;
+  const card = $("#weekly-card");
+  card.hidden = false;
+  try {
+    const data = await api("/api/box-office");
+    if (data.status === "unavailable" || !(data.movies || []).length) {
+      $("#weekly-reason").textContent = "今日票房榜暂时没有取得，稍后回到首页会自动重试。";
+      $("#weekly-movies").replaceChildren();
+      return;
+    }
+    renderDailyBoxOffice(data);
+  } catch {
+    $("#weekly-reason").textContent = "今日票房榜暂时没有取得，稍后回到首页会自动重试。";
+    $("#weekly-movies").replaceChildren();
+  }
+}
+
+function formatBoxOfficeAmount(value) {
+  const amount = Number(value || 0);
+  if (amount >= 10000) return `${(amount / 10000).toFixed(2).replace(/\.00$/, "")} 亿`;
+  return `${amount.toLocaleString("zh-CN", { maximumFractionDigits: 2 })} 万`;
+}
+
+function renderDailyBoxOffice(data) {
+  const businessDate = data.business_date || "今日";
+  $("#weekly-reason").textContent = data.stale
+    ? `${businessDate} 中国内地当日票房排名 · 显示最近一次可用榜单`
+    : `${businessDate} 中国内地当日票房排名 · 每日自动更新`;
+  $("#weekly-movies").replaceChildren(...(data.movies || []).map((movie) => {
     const item = document.createElement("article");
     item.className = "weekly-movie";
     item.append(posterNode(movie));
     const body = document.createElement("div");
+    const rank = document.createElement("span");
+    rank.className = "box-office-rank";
+    rank.textContent = `票房第 ${movie.box_office?.rank || "—"} 名`;
     const title = document.createElement("h3");
     title.textContent = movie.title_zh;
+    const amount = document.createElement("p");
+    amount.className = "box-office-amount";
+    amount.textContent = `当日 ${formatBoxOfficeAmount(movie.box_office?.day_box_office_wan)}`;
     const meta = document.createElement("p");
-    meta.textContent = `${movie.year} · ${(movie.genres || []).slice(0, 2).join(" / ")}`;
+    meta.className = "box-office-meta";
+    meta.textContent = `${Number(movie.box_office?.sessions || 0).toLocaleString("zh-CN")} 场 · ${Number(movie.box_office?.audience || 0).toLocaleString("zh-CN")} 人次`;
     const actions = document.createElement("div");
     actions.className = "history-item-actions";
     actions.append(
-      miniButton("留在想看", () => markMovie(movie, "watchlist", "weekly_recommendation")),
+      miniButton("留在想看", () => markMovie(movie, "watchlist", "daily_box_office")),
       miniButton("聊聊这部", () => openChat("discussion", movie)),
     );
-    body.append(title, meta, actions);
+    body.append(rank, title, amount, meta, actions);
     item.append(body);
     return item;
   }));
@@ -1062,6 +1501,10 @@ function historyItem(movie) {
   meta.textContent = `${movie.title_original} · ${(movie.genres || []).join(" / ")}`;
   const actions = document.createElement("div");
   actions.className = "history-item-actions";
+  const movieId = movie.id || movie.movie_id;
+  const conversations = state.historyState === "watched"
+    ? localConversationStore.listForMovie(movieId)
+    : [];
   if (state.historyState === "watchlist") {
     actions.append(
       miniButton("还想看", () => followUpWatchlist(movie, "keep")),
@@ -1073,7 +1516,15 @@ function historyItem(movie) {
       miniButton("不再感兴趣", () => followUpWatchlist(movie, "not_interested")),
     );
   } else {
-    actions.append(miniButton("聊聊", () => openChat("discussion", movie)));
+    if (conversations.length) {
+      actions.append(
+        miniButton("继续聊天", () => openPrimaryMovieConversation(movie)),
+        miniButton(`聊天记录 ${conversations.length}`, () => openConversationHistory(movie)),
+        miniButton("另开新对话", () => openChat("discussion", movie)),
+      );
+    } else {
+      actions.append(miniButton("聊聊", () => openChat("discussion", movie)));
+    }
   }
   actions.append(
     miniButton("移除", async () => {
@@ -1218,8 +1669,8 @@ function setVoiceMode(enabled) {
   const holdButton = $("#hold-to-talk");
   holdButton.disabled = state.voiceMode && !state.voiceConfigured;
   if (state.voiceMode && !state.voiceConfigured) {
-    $("#voice-recording-status").textContent = "豆包语音服务待管理员填写 App Key 后启用";
-    $("#voice-availability-status").textContent = "语音输入入口已显示，但豆包语音服务尚未配置";
+    $("#voice-recording-status").textContent = "语音服务待管理员配置后启用";
+    $("#voice-availability-status").textContent = "语音输入入口已显示，但语音服务尚未配置";
   } else if (state.voiceMode) {
     $("#voice-recording-status").textContent = "松开发送，Esc 取消";
     $("#voice-availability-status").textContent = "已切换到语音输入";
@@ -1237,7 +1688,7 @@ function bestRecordingMimeType() {
 async function startRecording() {
   if (state.recorder || state.sending) return;
   if (!state.voiceConfigured) {
-    $("#voice-recording-status").textContent = "豆包语音服务待管理员填写 App Key 后启用";
+    $("#voice-recording-status").textContent = "语音服务待管理员配置后启用";
     showToast("请先在管理后台完成豆包语音配置");
     return;
   }
@@ -1332,16 +1783,41 @@ function blobToBase64(blob) {
   });
 }
 
-async function attachVoiceReply(message, text) {
-  const bubble = message.querySelector(".message-bubble");
-  const wrap = document.createElement("div");
-  wrap.className = "voice-reply";
+function createVoiceReplyButton(label, ariaLabel) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "voice-reply-button";
+  button.setAttribute("aria-label", ariaLabel);
+  const wave = document.createElement("span");
+  wave.className = "voice-wave";
+  wave.setAttribute("aria-hidden", "true");
+  wave.append(...Array.from({ length: 4 }, () => document.createElement("span")));
+  const duration = document.createElement("span");
+  duration.className = "voice-reply-duration";
+  duration.textContent = label;
+  button.append(wave, duration);
+  return { button, duration };
+}
+
+function renderHistoricalVoiceReply(wrap, text) {
+  const { button, duration } = createVoiceReplyButton("播放", "播放这条历史回复");
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    const ready = await prepareVoiceReply(wrap, text, { playWhenReady: true });
+    if (!ready) {
+      renderHistoricalVoiceReply(wrap, text);
+      showToast("语音准备失败，请再试一次");
+    }
+  }, { once: true });
+  duration.setAttribute("aria-hidden", "true");
+  wrap.replaceChildren(button);
+  wrap.removeAttribute("role");
+}
+
+async function prepareVoiceReply(wrap, text, { playWhenReady = false } = {}) {
   wrap.setAttribute("role", "status");
   wrap.textContent = "正在准备语音回复…";
-  bubble.classList.add("has-voice-reply");
-  const name = bubble.querySelector(".message-name");
-  if (name) name.after(wrap);
-  else bubble.prepend(wrap);
+  scrollChatToLatest();
   try {
     const queued = await api("/api/jobs/voice", {
       method: "POST",
@@ -1350,18 +1826,7 @@ async function attachVoiceReply(message, text) {
     let data = null;
     await pollJob(queued.job.id, (job) => { data = job.result; }, "语音摘要生成失败");
     if (!data?.audio_base64) throw new Error("语音缓存已过期");
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "voice-reply-button";
-    button.setAttribute("aria-label", "播放阿映的语音回复");
-    const wave = document.createElement("span");
-    wave.className = "voice-wave";
-    wave.setAttribute("aria-hidden", "true");
-    wave.append(...Array.from({ length: 4 }, () => document.createElement("span")));
-    const duration = document.createElement("span");
-    duration.className = "voice-reply-duration";
-    duration.textContent = "…";
-    button.append(wave, duration);
+    const { button, duration } = createVoiceReplyButton("…", "播放阿映的语音回复");
     const audio = document.createElement("audio");
     audio.preload = "metadata";
     audio.setAttribute("aria-label", "播放阿映的语音回复");
@@ -1384,36 +1849,32 @@ async function attachVoiceReply(message, text) {
       if (audio.paused) await playVoiceAudio(audio, button, false);
       else audio.pause();
     });
-    const fullButton = document.createElement("button");
-    fullButton.type = "button";
-    fullButton.className = "voice-full-button";
-    fullButton.textContent = "完整朗读";
-    fullButton.addEventListener("click", async () => {
-      fullButton.disabled = true;
-      fullButton.textContent = "准备中…";
-      try {
-        const queuedFull = await api("/api/jobs/voice", {
-          method: "POST",
-          body: JSON.stringify({ text, full: true }),
-        });
-        await pollJob(queuedFull.job.id, (job) => {
-          if (!job.result.audio_base64) throw new Error("完整语音缓存已过期");
-          audio.src = `data:${job.result.content_type};base64,${job.result.audio_base64}`;
-          audio.load();
-        }, "完整朗读生成失败");
-        fullButton.textContent = "已切换完整朗读";
-      } catch (error) {
-        fullButton.textContent = "完整朗读";
-        showToast(error.message);
-      } finally {
-        fullButton.disabled = false;
-      }
-    });
-    wrap.replaceChildren(button, fullButton, audio);
+    wrap.replaceChildren(button, audio);
     wrap.removeAttribute("role");
+    scrollChatToLatest();
     state.activeVoiceAudio = audio;
-    if (state.voiceAutoPlay) await playVoiceAudio(audio, button, true);
+    if (playWhenReady) await playVoiceAudio(audio, button, false);
+    else if (state.voiceAutoPlay) await playVoiceAudio(audio, button, true);
+    return true;
   } catch {
+    return false;
+  }
+}
+
+async function attachVoiceReply(message, text, { lazy = false } = {}) {
+  const bubble = message.querySelector(".message-bubble");
+  const wrap = document.createElement("div");
+  wrap.className = "voice-reply";
+  bubble.classList.add("has-voice-reply");
+  const name = bubble.querySelector(".message-name");
+  if (name) name.after(wrap);
+  else bubble.prepend(wrap);
+  if (lazy) {
+    renderHistoricalVoiceReply(wrap, text);
+    return;
+  }
+  const ready = await prepareVoiceReply(wrap, text);
+  if (!ready) {
     wrap.remove();
     bubble.classList.remove("has-voice-reply");
   }
@@ -1483,6 +1944,7 @@ async function logout(clearDrafts) {
   state.chatHistory = [];
   state.currentConversationId = null;
   state.restoredConversation = false;
+  state.returnToChatFromHistory = false;
   $("#logout-dialog").close();
   showLogin();
 }
@@ -1491,14 +1953,38 @@ $("#logout-button").addEventListener("click", () => $("#logout-dialog").showModa
 $("#logout-keep-drafts").addEventListener("click", () => logout(false).catch((error) => showToast(error.message)));
 $("#logout-clear-drafts").addEventListener("click", () => logout(true).catch((error) => showToast(error.message)));
 
-$("#brand-home").addEventListener("click", () => navigate("home"));
-$$("[data-nav]").forEach((button) => button.addEventListener("click", () => navigate(button.dataset.nav)));
+$("#brand-home").addEventListener("click", () => {
+  state.returnToChatFromHistory = false;
+  navigate("home");
+});
+$$("[data-nav]").forEach((button) => button.addEventListener("click", () => navigatePrimary(button.dataset.nav)));
 $("#discussion-card").addEventListener("click", () => openChat("discussion"));
 $("#recommendation-card").addEventListener("click", () => openChat("recommendation"));
+$$('[data-activate-skill]').forEach((button) => {
+  button.addEventListener("click", () => activateSkill(button.dataset.activateSkill));
+});
+$("#clear-active-skill").addEventListener("click", () => {
+  state.activeSkillKey = null;
+  localConversationStore.writeCurrent($("#chat-input")?.value || "");
+  renderSkillToolbar();
+  renderChips(["我很喜欢，但说不上为什么", "有个地方我一直没看懂", "结局让我有点难受"]);
+  $("#chat-input").placeholder = "片名，或者看完后的第一句话……";
+  showToast("已回到自由聊电影");
+});
+$("#view-skill-records").addEventListener("click", () => {
+  openCognitionEditor("", "").catch((error) => showToast(error.message));
+});
+$("#content-draft-save").addEventListener("click", () => {
+  saveContentDraft().catch((error) => { $("#content-draft-status").textContent = error.message; });
+});
+$("#cognition-save").addEventListener("click", () => {
+  saveCognitionEntry().catch((error) => { $("#cognition-status").textContent = error.message; });
+});
 $("#chat-back").addEventListener("click", () => {
   const movie = state.selectedMovie;
   const history = [...state.chatHistory];
   localConversationStore.writeCurrent($("#chat-input").value);
+  state.returnToChatFromHistory = false;
   navigate("home");
   if (state.mode === "discussion" && movie && state.autoGenerateReflectionDrafts
       && history.some((item) => item.role === "user" && item.content.trim().length >= 12)) {
@@ -1510,6 +1996,8 @@ $("#chat-back").addEventListener("click", () => {
 });
 $("#onboarding-search-form").addEventListener("submit", async (event) => {
   event.preventDefault();
+  const submit = event.currentTarget.querySelector("button[type='submit']");
+  if (submit.disabled) return;
   const query = $("#onboarding-search-input").value.trim();
   $("#onboarding-reset-search").hidden = !query;
   await loadOnboardingCandidates(query);
@@ -1520,8 +2008,6 @@ $("#onboarding-reset-search").addEventListener("click", async () => {
   await loadOnboardingCandidates();
 });
 $("#onboarding-complete").addEventListener("click", completeOnboarding);
-$("#taste-profile-button").addEventListener("click", openTasteProfile);
-$("#continuity-settings-button").addEventListener("click", () => $("#continuity-settings-dialog").showModal());
 $("#taste-recommend").addEventListener("click", () => {
   $("#taste-dialog").close();
   navigate("home");
@@ -1580,7 +2066,7 @@ $("#voice-autoplay-toggle").addEventListener("click", () => setVoiceAutoPlay(!st
 $("#reflection-continue").addEventListener("click", () => {
   const movie = state.reflectionMovie;
   $("#reflection-dialog").close();
-  if (movie) openChat("discussion", movie);
+  if (movie) openPrimaryMovieConversation(movie);
 });
 $("#reflection-dialog").addEventListener("close", () => {
   if (state.reflectionTrigger?.isConnected) state.reflectionTrigger.focus();
@@ -1606,8 +2092,17 @@ $("#hold-to-talk").addEventListener("keyup", (event) => {
   }
 });
 document.addEventListener("keydown", (event) => {
+  pauseChatAutoFollow(event);
   if (event.key === "Escape" && state.recorder) stopRecording(true);
 });
+window.addEventListener("wheel", pauseChatAutoFollow, { passive: true });
+window.addEventListener("touchmove", pauseChatAutoFollow, { passive: true });
+window.addEventListener("scroll", () => {
+  clearTimeout(state.chatScrollSettleTimer);
+  state.chatScrollSettleTimer = setTimeout(() => {
+    if (isChatNearBottom()) state.chatAutoFollow = true;
+  }, 120);
+}, { passive: true });
 $("#chat-input").addEventListener("input", (event) => {
   autoResize(event.target);
   localConversationStore.writeCurrent(event.target.value);
@@ -1633,7 +2128,7 @@ $("#monthly-recap-share").addEventListener("click", () => createMonthlyRecapShar
 $("#conversation-summary-button").addEventListener("click", () => openConversationSummary().catch((error) => showToast(error.message)));
 $("#conversation-summary-save").addEventListener("click", () => saveConversationSummary().catch((error) => showToast(error.message)));
 $("#conversation-summary-delete").addEventListener("click", () => deleteConversationSummary().catch((error) => showToast(error.message)));
-$("#chat-history-button").addEventListener("click", openConversationHistory);
+$("#chat-history-button").addEventListener("click", () => openConversationHistory());
 $("#chat-draft-clear").addEventListener("click", () => {
   const movie = state.selectedMovie;
   openChat("discussion", movie).then(() => showToast("已开始一段新的电影对话"));
@@ -1648,7 +2143,7 @@ $("#clear-all-local-drafts").addEventListener("click", () => {
 $("#conversation-history-delete-cancel").addEventListener("click", () => {
   state.pendingConversationDeleteId = null;
   $("#conversation-history-delete-dialog").close();
-  renderConversationHistory();
+  renderConversationHistory(state.conversationHistoryMovie);
   $("#conversation-history-dialog").showModal();
 });
 $("#conversation-history-delete-confirm").addEventListener("click", () => {
@@ -1662,39 +2157,9 @@ $("#conversation-history-delete-confirm").addEventListener("click", () => {
     openChat("discussion", state.selectedMovie).then(() => showToast("历史对话已删除，已开始新对话"));
     return;
   }
-  renderConversationHistory();
+  renderConversationHistory(state.conversationHistoryMovie);
   $("#conversation-history-dialog").showModal();
   showToast("历史对话已删除");
-});
-$("#weekly-enabled").addEventListener("change", async (event) => {
-  try {
-    const data = await api("/api/weekly-recommendation/preferences", {
-      method: "POST",
-      body: JSON.stringify({ enabled: event.target.checked }),
-    });
-    state.weeklyEnabled = data.enabled;
-    if (data.enabled) await loadWeeklyRecommendation();
-    else $("#weekly-card").hidden = true;
-  } catch (error) {
-    event.target.checked = state.weeklyEnabled;
-    showToast(error.message);
-  }
-});
-$("#weekly-dismiss").addEventListener("click", async () => {
-  await api("/api/weekly-recommendation/dismiss", { method: "POST", body: "{}" });
-  $("#weekly-card").hidden = true;
-  showToast("本周建议已关闭，下周才会再次出现");
-});
-$("#weekly-refresh-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  try {
-    const data = await api("/api/weekly-recommendation/refresh", {
-      method: "POST",
-      body: JSON.stringify({ direction: $("#weekly-direction").value }),
-    });
-    renderWeeklyRecommendation(data.recommendation);
-    $("#weekly-direction").value = "";
-  } catch (error) { showToast(error.message); }
 });
 $("#share-create").addEventListener("click", () => createShareCard().catch((error) => showToast(error.message)));
 $("#share-revoke").addEventListener("click", async () => {
@@ -1718,12 +2183,23 @@ $("#movie-search-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const query = $("#movie-search-input").value.trim();
   const wrap = $("#movie-search-results");
+  const submit = event.currentTarget.querySelector("button[type='submit']");
+  if (submit.disabled) return;
+  const loading = document.createElement("p");
+  loading.className = "empty-state";
+  loading.textContent = "正在搜索电影…";
+  wrap.replaceChildren(loading);
+  wrap.setAttribute("aria-busy", "true");
+  submit.disabled = true;
+  submit.textContent = "搜索中…";
   try {
     const data = await api(`/api/movies?query=${encodeURIComponent(query)}`);
     if (!data.items.length) {
       const empty = document.createElement("p");
       empty.className = "empty-state";
-      empty.textContent = "热门片库里暂时没有找到。";
+      empty.textContent = data.search_status === "unavailable"
+        ? "电影搜索服务暂时不可用，请稍后重试。"
+        : "没有找到这部电影，试试完整片名、原名或别名。";
       wrap.replaceChildren(empty);
       return;
     }
@@ -1749,7 +2225,15 @@ $("#movie-search-form").addEventListener("submit", async (event) => {
       return row;
     }));
   } catch (error) {
-    showToast(error.message);
+    const failed = document.createElement("p");
+    failed.className = "empty-state";
+    failed.textContent = error.message || "电影搜索失败，请稍后重试。";
+    wrap.replaceChildren(failed);
+    showToast(failed.textContent);
+  } finally {
+    wrap.removeAttribute("aria-busy");
+    submit.disabled = false;
+    submit.textContent = "搜索";
   }
 });
 

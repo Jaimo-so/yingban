@@ -10,7 +10,7 @@
         window.location.replace("http://127.0.0.1:8765/");
       }
     </script>
-    <link rel="stylesheet" href="/styles.css?v=15">
+    <link rel="stylesheet" href="/styles.css?v=20">
   </head>
   <body>
     <div class="film-grain" aria-hidden="true"></div>
@@ -73,13 +73,13 @@
         <section id="onboarding-view" class="view onboarding-view" hidden aria-labelledby="onboarding-title">
           <header class="onboarding-heading">
             <div>
-              <p class="eyebrow">FIRST FIVE FILMS</p>
-              <h1 id="onboarding-title">用 5 部看过的电影，<br>让阿映先认识你的口味。</h1>
+              <p class="eyebrow">YOUR FIRST FILMS</p>
+              <h1 id="onboarding-title">用 1～5 部看过的电影，<br>让阿映先认识你的口味。</h1>
               <p>这不是性格测试。每个判断都会显示电影证据，只用于推荐与电影讨论，也可以随时修正。</p>
             </div>
             <div class="onboarding-progress" aria-live="polite">
               <strong id="onboarding-count">0/5</strong>
-              <span id="onboarding-remaining">还需要 5 部</span>
+              <span id="onboarding-remaining">至少选择 1 部</span>
             </div>
           </header>
 
@@ -100,12 +100,12 @@
               <div id="onboarding-candidates" class="onboarding-grid" aria-live="polite"></div>
             </section>
             <aside class="onboarding-selection" aria-labelledby="onboarding-selection-title">
-              <p class="eyebrow">你的 5 部</p>
+              <p class="eyebrow">你选的电影</p>
               <h2 id="onboarding-selection-title">看过，也留下态度</h2>
               <p>喜欢、一般、不喜欢都是真实证据；“不喜欢”不会抹掉看过事实。</p>
               <ol id="onboarding-selected" class="selected-movie-list"></ol>
               <p id="onboarding-status" class="action-result" role="status" aria-live="polite"></p>
-              <button id="onboarding-complete" class="button button-primary button-full" type="button">还需要选择 5 部电影</button>
+              <button id="onboarding-complete" class="button button-primary button-full" type="button" disabled>请至少选择 1 部电影</button>
             </aside>
           </div>
         </section>
@@ -144,37 +144,14 @@
           <section id="weekly-card" class="weekly-card" aria-labelledby="weekly-title" hidden>
             <div class="weekly-card-head">
               <div>
-                <p class="eyebrow">THIS WEEK</p>
+                <p class="eyebrow">NOW PLAYING · DAILY BOX OFFICE</p>
                 <h2 id="weekly-title">这周，可以从这里开始</h2>
-                <p id="weekly-reason"></p>
+                <p id="weekly-reason" aria-live="polite"></p>
               </div>
-              <button id="weekly-dismiss" class="text-button" type="button">本周不再显示</button>
+              <a id="box-office-source" class="text-button" href="https://www.zgdypw.cn/" target="_blank" rel="noopener noreferrer">查看数据来源 ↗</a>
             </div>
             <div id="weekly-movies" class="weekly-movies"></div>
-            <form id="weekly-refresh-form" class="weekly-refresh-form">
-              <label for="weekly-direction">这周想换个方向</label>
-              <div><input id="weekly-direction" maxlength="300" placeholder="例如：轻一点，不要爱情片"><button class="button button-secondary" type="submit">换个方向</button></div>
-            </form>
           </section>
-
-          <aside class="memory-note">
-            <span class="memory-icon" aria-hidden="true">✦</span>
-            <div>
-              <strong>阿映会记住看过的电影</strong>
-              <p>观后讨论和“这部看过了”会自动进入你的片单，之后不再重复推荐。</p>
-            </div>
-          </aside>
-
-          <button id="taste-profile-button" class="taste-profile-entry" type="button">
-            <span class="memory-icon" aria-hidden="true">◎</span>
-            <span><strong>阿映目前怎么理解我</strong><small>查看电影证据、修正口味结论</small></span>
-            <span aria-hidden="true">→</span>
-          </button>
-          <button id="continuity-settings-button" class="taste-profile-entry" type="button">
-            <span class="memory-icon" aria-hidden="true">◷</span>
-            <span><strong>连续性与主动建议设置</strong><small>本机历史对话保留 7 天；管理本周建议</small></span>
-            <span aria-hidden="true">→</span>
-          </button>
         </section>
 
         <section id="chat-view" class="view chat-view" hidden>
@@ -203,9 +180,23 @@
           </div>
 
           <div id="chat-draft-notice" class="chat-draft-notice" hidden>
-            <span id="chat-draft-message">正在查看此设备上的历史对话（最多保留 7 天）。</span>
+            <span id="chat-draft-message">本机历史最多保留 7 天；绑定电影后的消息会同步到服务端供管理员查看。</span>
             <button id="chat-draft-clear" class="text-button" type="button">开始新对话</button>
           </div>
+
+          <section id="skill-toolbar" class="skill-toolbar" aria-label="当前对话技能">
+            <div>
+              <span class="eyebrow">ACTIVE SKILL</span>
+              <strong id="active-skill-name">自由聊电影</strong>
+              <span id="active-skill-description">普通聊天不会自动生成或保存正式内容。</span>
+            </div>
+            <div id="discussion-skill-actions" class="skill-toolbar-actions">
+              <button class="mini-button" type="button" data-activate-skill="structured_review_creation">创作发布内容</button>
+              <button class="mini-button" type="button" data-activate-skill="viewing_cognition_archive">记录重看认识</button>
+              <button id="view-skill-records" class="mini-button" type="button" hidden>查看已存记录</button>
+              <button id="clear-active-skill" class="text-button" type="button" hidden>退出 Skill</button>
+            </div>
+          </section>
 
           <div id="chat-messages" class="chat-messages" aria-live="polite"></div>
 
@@ -268,7 +259,7 @@
         <input id="movie-search-input" placeholder="输入中文名、原名或别名" required>
         <button class="button button-primary" type="submit">搜索</button>
       </form>
-      <div id="movie-search-results" class="search-results"></div>
+      <div id="movie-search-results" class="search-results" aria-live="polite"></div>
     </dialog>
 
     <dialog id="reflection-dialog" class="reflection-dialog" aria-labelledby="reflection-title">
@@ -323,13 +314,72 @@
       </div>
     </dialog>
 
+    <dialog id="content-draft-dialog" class="utility-dialog skill-artifact-dialog" aria-labelledby="content-draft-title">
+      <form method="dialog" class="dialog-head">
+        <div><span class="eyebrow">CREATOR DRAFT</span><h2 id="content-draft-title">保存内容创作草稿</h2></div>
+        <button class="icon-button" value="cancel" aria-label="关闭内容草稿">×</button>
+      </form>
+      <div class="utility-dialog-body settings-stack">
+        <p>这是独立的创作草稿，不会自动发布，也不会反向写成你的长期观影认知。</p>
+        <label for="content-scene">内容场景</label>
+        <select id="content-scene">
+          <option value="xiaohongshu">小红书观后内容</option>
+          <option value="formal_review">个人正式影评</option>
+          <option value="promotion">影视宣推内容</option>
+        </select>
+        <label for="content-draft-text">保存前预览与编辑</label>
+        <textarea id="content-draft-text" maxlength="30000" rows="14"></textarea>
+        <label for="content-source-material">本次使用的原始感受</label>
+        <textarea id="content-source-material" maxlength="6000" rows="4"></textarea>
+        <p id="content-draft-status" class="action-result" role="status"></p>
+        <div id="saved-content-drafts" class="skill-record-list"></div>
+      </div>
+      <div class="dialog-actions">
+        <button id="content-draft-save" class="button button-primary" type="button">确认保存为新版本</button>
+      </div>
+    </dialog>
+
+    <dialog id="cognition-dialog" class="utility-dialog skill-artifact-dialog" aria-labelledby="cognition-title">
+      <form method="dialog" class="dialog-head">
+        <div><span class="eyebrow">VIEWING LAYERS</span><h2 id="cognition-title">保存这次观看的认识</h2></div>
+        <button class="icon-button" value="cancel" aria-label="关闭观影认知记录">×</button>
+      </form>
+      <div class="utility-dialog-body settings-stack">
+        <p>每次观看都是独立时间切片。新记录不会覆盖旧记录，保存后才能进入阶段比较。</p>
+        <div class="skill-form-grid">
+          <label>观看轮次<input id="cognition-round" type="number" min="1" max="999" value="1"></label>
+          <label>观影阶段<select id="cognition-stage">
+            <option value="first_impression">散场即刻</option>
+            <option value="post_discussion">交流之后</option>
+            <option value="revisit">隔期回看</option>
+            <option value="rewatch">重看之后</option>
+            <option value="retrospective">长期回顾</option>
+          </select></label>
+          <label>观看日期<input id="cognition-watched-at" type="date"></label>
+          <label>影片版本<input id="cognition-edition" maxlength="200" placeholder="例如：导演剪辑版；不确定可留空"></label>
+        </div>
+        <label for="cognition-raw">本次原始感受</label>
+        <textarea id="cognition-raw" maxlength="6000" rows="5"></textarea>
+        <label for="cognition-synthesis">确认保存的认知整理</label>
+        <textarea id="cognition-synthesis" maxlength="6000" rows="8"></textarea>
+        <label for="cognition-dimensions">关注维度</label>
+        <input id="cognition-dimensions" maxlength="500" placeholder="人物、场景、主题等，用顿号或逗号分隔">
+        <p id="cognition-status" class="action-result" role="status"></p>
+        <section id="cognition-comparison" class="cognition-comparison" hidden></section>
+        <div id="cognition-records" class="skill-record-list"></div>
+      </div>
+      <div class="dialog-actions">
+        <button id="cognition-save" class="button button-primary" type="button">确认并保存本次记录</button>
+      </div>
+    </dialog>
+
     <dialog id="conversation-history-dialog" class="utility-dialog conversation-history-dialog" aria-labelledby="conversation-history-title">
       <form method="dialog" class="dialog-head">
         <div><span class="eyebrow">LOCAL CONVERSATIONS</span><h2 id="conversation-history-title">历史对话</h2></div>
         <button class="icon-button" value="cancel" aria-label="关闭历史对话">×</button>
       </form>
       <div class="utility-dialog-body conversation-history-body">
-        <p>原始聊天只保存在当前浏览器，默认 7 天后自动过期，不会上传服务端。</p>
+        <p>本机历史默认 7 天后自动过期；确认电影后的对话会同步到服务端，并可由管理员按邀请码账户查看。</p>
         <p id="conversation-history-count" class="conversation-history-count" aria-live="polite"></p>
         <div id="conversation-history-list" class="conversation-history-list"></div>
       </div>
@@ -388,8 +438,7 @@
         <button class="icon-button" value="cancel" aria-label="关闭设置">×</button>
       </form>
       <div class="utility-dialog-body settings-stack">
-        <section><h3>本机历史对话</h3><p>每次进入“聊电影”都会开始新对话；旧对话仅保存在当前浏览器，默认 7 天后自动过期，不会上传服务端。</p><button id="clear-all-local-drafts" class="button button-secondary" type="button">清空此设备全部历史对话</button></section>
-        <section><h3>本周电影建议</h3><p>每个自然周最多自动生成一次，仅在应用首页出现。</p><label class="inline-check"><input id="weekly-enabled" type="checkbox" checked><span>允许显示本周电影建议</span></label></section>
+        <section><h3>本机历史对话</h3><p>每次进入“聊电影”都会开始新对话；本机副本默认 7 天后自动过期。绑定电影后的对话还会同步到服务端，供管理员按邀请码账户查看；清空本机副本不会删除服务端记录。</p><button id="clear-all-local-drafts" class="button button-secondary" type="button">清空此设备全部历史对话</button></section>
       </div>
     </dialog>
 
@@ -398,7 +447,7 @@
         <div><span class="eyebrow">LEAVE THIS DEVICE</span><h2 id="logout-title">退出前，处理历史对话</h2></div>
         <button class="icon-button" value="cancel" aria-label="取消退出">×</button>
       </form>
-      <div class="utility-dialog-body"><p>退出账户不会自动上传历史对话。共用设备建议同时清空；私人设备可以保留最多 7 天。</p></div>
+      <div class="utility-dialog-body"><p>退出账户不会删除已同步的服务端对话记录。共用设备建议同时清空本机副本；私人设备最多保留 7 天。</p></div>
       <div class="dialog-actions">
         <button id="logout-keep-drafts" class="button button-secondary" type="button">保留历史并退出</button>
         <button id="logout-clear-drafts" class="button button-primary" type="button">清空历史并退出</button>
@@ -414,11 +463,11 @@
       <div id="taste-dimensions" class="taste-dimensions"></div>
       <div class="taste-actions">
         <button id="taste-recommend" class="button button-primary" type="button">帮我找下一部</button>
-        <button id="taste-discuss" class="button button-secondary" type="button">聊聊这 5 部中的一部</button>
+        <button id="taste-discuss" class="button button-secondary" type="button">聊聊你选的电影</button>
       </div>
     </dialog>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/app.js?v=14" defer></script>
+    <script src="/app.js?v=29" defer></script>
   </body>
 </html>

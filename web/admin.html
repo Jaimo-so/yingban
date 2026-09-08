@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="robots" content="noindex, nofollow">
     <title>影伴 · 管理后台</title>
-    <link rel="stylesheet" href="/styles.css?v=9">
-    <link rel="stylesheet" href="/admin.css?v=9">
+    <link rel="stylesheet" href="/styles.css?v=10">
+    <link rel="stylesheet" href="/admin.css?v=16">
   </head>
   <body class="admin-body">
     <header class="admin-topbar">
@@ -21,7 +21,7 @@
       <section id="admin-login" class="admin-login">
         <p class="eyebrow">ADMIN ACCESS</p>
         <h1>管理员登录</h1>
-        <p>使用部署环境中配置的管理员口令。邀请码正文不会在列表中再次显示。</p>
+        <p>使用部署环境中配置的管理员口令。新生成的邀请码可在列表中安全复制，旧版邀请码仍只显示尾号。</p>
         <form id="admin-login-form">
           <label for="admin-token">管理员口令</label>
           <input id="admin-token" type="password" autocomplete="current-password" required>
@@ -35,14 +35,13 @@
           <div>
             <p class="eyebrow">AGENT CONTROL ROOM</p>
             <h1>配置中心</h1>
-            <p>模型连接、角色提示词和账户入口都在这里管理，保存后立即生效。</p>
+            <p>模型、模块提示词和账户入口按保存结果生效；Skill 修改先成为草稿，明确发布后才进入运行时。</p>
           </div>
           <nav class="section-nav" aria-label="配置中心导航">
             <a href="#health-overview">产品健康</a>
-            <a href="#agent-settings">模型与 Agent</a>
-            <a href="#internet-settings">联网与影片</a>
-            <a href="#voice-settings">语音</a>
+            <a href="#api-settings">API 设置</a>
             <a href="#opening-settings">开场白</a>
+            <a href="#skill-settings">Skill 管理</a>
             <a href="#invite-settings">邀请码</a>
           </nav>
         </div>
@@ -87,7 +86,33 @@
           </div>
         </section>
 
-        <section id="agent-settings" class="admin-section">
+        <section id="api-settings" class="admin-section api-section">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">API CONNECTIONS</p>
+              <h2>API 设置</h2>
+              <p>集中管理大模型、联网电影服务、语音和图像接口。点击上方名称，下方只显示对应配置。</p>
+            </div>
+          </div>
+
+          <div class="management-browser api-management-browser">
+            <div class="management-selector-list api-selector-list" aria-label="API 设置列表">
+              <button class="management-selector is-active" type="button" data-api-target="model" aria-controls="agent-settings" aria-pressed="true">
+                <strong>模型与 Agent</strong><small>文本模型与运行参数</small>
+              </button>
+              <button class="management-selector" type="button" data-api-target="internet" aria-controls="internet-settings" aria-pressed="false">
+                <strong>联网与影片</strong><small>TMDB 与网页检索</small>
+              </button>
+              <button class="management-selector" type="button" data-api-target="voice" aria-controls="voice-settings" aria-pressed="false">
+                <strong>语音</strong><small>识别、合成与音色</small>
+              </button>
+              <button class="management-selector" type="button" data-api-target="image" aria-controls="image-settings" aria-pressed="false">
+                <strong>图像</strong><small>生成、编辑与权限</small>
+              </button>
+            </div>
+
+            <div class="management-detail api-management-detail">
+        <section id="agent-settings" class="api-settings-panel" data-api-panel="model">
           <div class="section-heading">
             <div>
               <p class="eyebrow">MODEL CONNECTION</p>
@@ -99,21 +124,30 @@
 
           <form id="model-config-form" class="config-card model-form">
             <div class="field field-wide">
-              <label for="model-provider">接口协议</label>
+              <label for="model-provider">接口协议（选择厂家时自动切换）</label>
               <select id="model-provider" required>
                 <option value="anthropic">Anthropic Messages</option>
                 <option value="openai_compatible">OpenAI 兼容</option>
+                <option value="stepfun">阶跃星辰 Step Plan</option>
               </select>
               <small id="provider-help">适用于 Claude 官方接口及兼容 Anthropic Messages 的服务。</small>
             </div>
 
             <div class="field">
-              <label for="model-id">模型名称</label>
-              <input id="model-id" maxlength="200" placeholder="例如 claude-sonnet-4-6" required>
+              <label for="model-id">文本模型选择</label>
+              <input id="model-id" list="model-id-options" maxlength="200" placeholder="例如 step-3.7-flash" required>
+              <datalist id="model-id-options"></datalist>
+              <small id="model-id-help">可输入服务商支持的模型 ID；阶跃星辰会提供当前已接入的模型选项。</small>
             </div>
             <div class="field">
-              <label for="model-base-url">接口根地址</label>
-              <input id="model-base-url" type="url" placeholder="https://api.anthropic.com" required>
+              <label for="model-base-url-preset">厂家与接口根地址</label>
+              <select id="model-base-url-preset" required></select>
+              <small>全部厂家始终显示并按协议分组；选择后会自动切换协议并填写根地址。</small>
+            </div>
+            <div id="model-base-url-custom-field" class="field" hidden>
+              <label for="model-base-url">自定义接口根地址</label>
+              <input id="model-base-url" type="url" placeholder="https://api.example.com" required>
+              <small>最终保存并用于模型请求的地址。</small>
             </div>
 
             <div class="field field-wide secret-field">
@@ -148,7 +182,7 @@
           </form>
         </section>
 
-        <section id="internet-settings" class="admin-section">
+        <section id="internet-settings" class="api-settings-panel" data-api-panel="internet" hidden>
           <div class="section-heading">
             <div>
               <p class="eyebrow">LIVE MOVIE KNOWLEDGE</p>
@@ -176,13 +210,14 @@
             <div class="field">
               <label for="web-search-provider">Web Search 服务商</label>
               <select id="web-search-provider" required aria-describedby="web-search-provider-help">
-                <option value="tavily">Tavily（推荐 · 每月免费额度）</option>
+                <option value="bocha">博查 Web Search（推荐）</option>
+                <option value="tavily">Tavily（兼容保留）</option>
                 <option value="brave">Brave Search（兼容保留）</option>
               </select>
-              <small id="web-search-provider-help">Tavily 免费版每月提供 1,000 credits，无需绑定信用卡。</small>
+              <small id="web-search-provider-help">博查支持中文全网搜索，并可限定检索豆瓣或知乎公开页面。</small>
             </div>
             <div class="field">
-              <label id="web-search-base-url-label" for="web-search-base-url">Tavily Search 接口根地址</label>
+              <label id="web-search-base-url-label" for="web-search-base-url">博查 Web Search 接口根地址</label>
               <input id="web-search-base-url" type="url" required aria-describedby="web-search-provider-help">
             </div>
             <div class="field">
@@ -191,9 +226,9 @@
               <small id="reader-help">只允许读取公开的豆瓣和知乎页面。</small>
             </div>
             <div class="field field-wide secret-field">
-              <label id="web-search-api-key-label" for="web-search-api-key">Tavily API Key</label>
+              <label id="web-search-api-key-label" for="web-search-api-key">博查 API 密钥</label>
               <input id="web-search-api-key" type="password" autocomplete="new-password" placeholder="未配置" aria-describedby="web-search-help">
-              <small id="web-search-help">基础搜索每次使用 1 credit；可搜索全网，并限定检索豆瓣或知乎。留空表示保留当前密钥。</small>
+              <small id="web-search-help">从博查开放平台复制 API 密钥；留空表示保留当前服务商的密钥。</small>
               <label class="inline-check" for="clear-web-search-api-key"><input id="clear-web-search-api-key" type="checkbox"><span>清除 Web Search 密钥</span></label>
               <label class="inline-check" for="web-reader-enabled"><input id="web-reader-enabled" type="checkbox"><span>允许读取公开的豆瓣与知乎页面正文</span></label>
             </div>
@@ -207,28 +242,35 @@
           </form>
         </section>
 
-        <section id="voice-settings" class="admin-section">
+        <section id="voice-settings" class="api-settings-panel" data-api-panel="voice" hidden>
           <div class="section-heading">
             <div>
               <p class="eyebrow">VOICE CONVERSATION</p>
               <h2>语音交互</h2>
-              <p>支持豆包或 OpenAI 兼容的语音识别与语音合成接口。用户录音只用于当次转写，后端不保存原始音频。</p>
+              <p>支持豆包、OpenAI 兼容与阶跃星辰 StepAudio 2.5 的语音识别和语音合成；StepAudio 同时保留 Chat 与 Realtime 模型配置。用户录音只用于当次转写，后端不保存原始音频。</p>
             </div>
             <span id="voice-status" class="connection-status status-demo">尚未配置</span>
           </div>
 
           <form id="voice-config-form" class="config-card model-form">
             <div class="field">
-              <label for="voice-provider">语音服务商</label>
+              <label for="voice-provider">语音服务商（选择接口时自动切换）</label>
               <select id="voice-provider" required>
                 <option value="doubao">豆包语音（推荐）</option>
                 <option value="openai_compatible">OpenAI 兼容</option>
+                <option value="stepfun">阶跃星辰 StepAudio 2.5</option>
               </select>
               <small id="voice-provider-help">当前交互使用录音文件识别和语音合成，不启用全双工实时通话。</small>
             </div>
             <div class="field">
-              <label for="voice-base-url">语音接口根地址</label>
-              <input id="voice-base-url" type="url" required>
+              <label for="voice-base-url-preset">语音厂家与接口根地址</label>
+              <select id="voice-base-url-preset" required></select>
+              <small>豆包、OpenAI 与阶跃星辰始终显示；选择后自动切换服务商、接口和对应模型。</small>
+            </div>
+            <div id="voice-base-url-custom-field" class="field" hidden>
+              <label for="voice-base-url">自定义语音接口根地址</label>
+              <input id="voice-base-url" type="url" placeholder="https://api.example.com" required>
+              <small>最终保存并用于语音识别与合成请求的地址。</small>
             </div>
             <div class="field">
               <label id="voice-api-key-label" for="voice-api-key">App Key</label>
@@ -254,12 +296,26 @@
               </details>
             </div>
             <div class="field compact-field">
-              <label id="voice-stt-label" for="voice-stt-model">语音识别资源 ID</label>
-              <input id="voice-stt-model" maxlength="200" required>
+              <label id="voice-stt-label" for="voice-stt-model">语音识别模型选择</label>
+              <input id="voice-stt-model" list="voice-stt-options" maxlength="200" required>
+              <datalist id="voice-stt-options"></datalist>
             </div>
             <div class="field compact-field">
-              <label id="voice-tts-label" for="voice-tts-model">语音合成资源 ID</label>
-              <input id="voice-tts-model" maxlength="200" required>
+              <label id="voice-tts-label" for="voice-tts-model">语音合成模型选择</label>
+              <input id="voice-tts-model" list="voice-tts-options" maxlength="200" required>
+              <datalist id="voice-tts-options"></datalist>
+            </div>
+            <div id="voice-chat-field" class="field compact-field" hidden>
+              <label for="voice-chat-model">语音对话模型选择</label>
+              <input id="voice-chat-model" list="voice-chat-options" maxlength="200" required>
+              <datalist id="voice-chat-options"></datalist>
+              <small>按轮次调用 Chat Completions，当前模型返回文本。</small>
+            </div>
+            <div id="voice-realtime-field" class="field compact-field" hidden>
+              <label for="voice-realtime-model">实时语音模型选择</label>
+              <input id="voice-realtime-model" list="voice-realtime-options" maxlength="200" required>
+              <datalist id="voice-realtime-options"></datalist>
+              <small>模型配置已保留；当前影伴仍使用录音式 ASR → 文本 Agent → TTS，尚未启用 WebSocket 全双工通话。</small>
             </div>
             <div class="field compact-field">
               <label id="voice-name-label" for="voice-name">豆包音色 ID</label>
@@ -280,6 +336,54 @@
             </div>
             <p class="security-note field-wide">App Key、Access Token 只保存在后端。用户端默认尝试自动播放，并可随时切换为手动播放；浏览器策略拦截时保留播放按钮。录音最大 10 MB，转写完成后不落盘。</p>
           </form>
+        </section>
+
+        <section id="image-settings" class="api-settings-panel" data-api-panel="image" hidden>
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">IMAGE MODEL</p>
+              <h2>图像生成与编辑</h2>
+              <p>接入 Step Image Edit 2 的文生图与单图编辑端点。当前先提供模型配置和权限测试，不改变影伴的电影海报与分享卡流程。</p>
+            </div>
+            <span id="image-status" class="connection-status status-demo">尚未配置</span>
+          </div>
+
+          <form id="image-config-form" class="config-card model-form">
+            <div class="field">
+              <label for="image-model">图像模型选择</label>
+              <select id="image-model" required></select>
+              <small>支持文生图与基于一张图片的编辑。</small>
+            </div>
+            <div class="field">
+              <label for="image-base-url-preset">图像接口根地址选择</label>
+              <select id="image-base-url-preset" required></select>
+              <small>默认使用阶跃星辰 Step Plan；兼容服务可以使用自定义地址。</small>
+            </div>
+            <div id="image-base-url-custom-field" class="field" hidden>
+              <label for="image-base-url">自定义图像接口根地址</label>
+              <input id="image-base-url" type="url" placeholder="https://api.example.com" required>
+              <small>最终保存并用于图像模型请求的地址。</small>
+            </div>
+            <div class="field field-wide secret-field">
+              <label for="image-api-key">阶跃星辰 API 密钥</label>
+              <input id="image-api-key" type="password" autocomplete="new-password" placeholder="未配置" aria-describedby="image-key-help">
+              <small id="image-key-help">密钥不会再次完整显示；留空表示保留当前密钥。</small>
+              <label class="inline-check" for="clear-image-api-key"><input id="clear-image-api-key" type="checkbox"><span>清除图像模型密钥</span></label>
+            </div>
+            <div class="field compact-field">
+              <label for="image-timeout">请求超时（秒）</label>
+              <input id="image-timeout" type="number" min="5" max="300" step="1" required>
+            </div>
+            <div class="form-actions field-wide">
+              <button id="test-image" class="button button-secondary" type="button">测试模型权限</button>
+              <button class="button button-primary" type="submit">保存图像配置</button>
+              <span id="image-test-result" class="action-result" role="status" aria-live="polite"></span>
+            </div>
+            <p class="security-note field-wide">测试只查询所选模型信息，不生成图片、不产生图片内容。API 密钥只保存在后端。</p>
+          </form>
+        </section>
+            </div>
+          </div>
         </section>
 
         <section id="opening-settings" class="admin-section opening-section">
@@ -319,40 +423,76 @@
           <div class="section-heading">
             <div>
               <p class="eyebrow">SYSTEM PROMPTS</p>
-              <h2>Agent 提示词</h2>
-              <p>两个入口使用完全独立的角色提示词。产品会在运行时自动补充影片、剧透与候选片单上下文。</p>
+              <h2>公共核心与模块提示词</h2>
+              <p>公共核心负责身份、安全、事实、记忆和工具边界，只读且不可被模块或 Skill 覆盖；两个模块提示词可独立编辑。</p>
             </div>
           </div>
 
           <form id="prompt-config-form">
-            <div class="prompt-grid">
-              <article class="config-card prompt-card">
+            <div class="management-selector-list prompt-selector-list" aria-label="系统提示词列表">
+              <button class="management-selector is-active" type="button" data-prompt-target="core" aria-controls="prompt-panel-core" aria-pressed="true">
+                <strong>不可覆盖的公共核心</strong>
+                <small>只读</small>
+              </button>
+              <button class="management-selector" type="button" data-prompt-target="discussion" aria-controls="prompt-panel-discussion" aria-pressed="false">
+                <strong>聊电影模块</strong>
+                <small>可编辑</small>
+              </button>
+              <button class="management-selector" type="button" data-prompt-target="recommendation" aria-controls="prompt-panel-recommendation" aria-pressed="false">
+                <strong>选电影模块</strong>
+                <small>可编辑</small>
+              </button>
+            </div>
+
+            <div class="management-detail prompt-management-detail">
+              <article id="prompt-panel-core" class="config-card prompt-card core-prompt-card" data-prompt-panel="core">
+                <div class="prompt-card-heading"><div><span class="prompt-number">00</span><h3>不可覆盖的公共核心</h3></div></div>
+                <p>负责身份、安全、事实、记忆与工具边界，模块提示词和 Skill 均不能覆盖。</p>
+                <label class="sr-only" for="core-prompt">不可覆盖的公共核心提示词</label>
+                <textarea id="core-prompt" rows="18" readonly aria-readonly="true"></textarea>
+              </article>
+
+              <article id="prompt-panel-discussion" class="config-card prompt-card" data-prompt-panel="discussion" hidden>
                 <div class="prompt-card-heading">
-                  <div><span class="prompt-number">01</span><h3>聊电影 Agent</h3></div>
+                  <div><span class="prompt-number">01</span><h3>聊电影模块</h3></div>
                   <button class="text-action" type="button" data-reset-prompt="discussion">恢复默认</button>
                 </div>
                 <p>负责接住观后感、讨论人物与主题，并遵守用户的剧透选择。</p>
-                <label class="sr-only" for="discussion-prompt">聊电影 Agent 系统提示词</label>
+                <label class="sr-only" for="discussion-prompt">聊电影模块提示词</label>
                 <textarea id="discussion-prompt" rows="24" minlength="20" maxlength="30000" required></textarea>
                 <span id="discussion-count" class="character-count"></span>
               </article>
 
-              <article class="config-card prompt-card">
+              <article id="prompt-panel-recommendation" class="config-card prompt-card" data-prompt-panel="recommendation" hidden>
                 <div class="prompt-card-heading">
-                  <div><span class="prompt-number">02</span><h3>找电影 Agent</h3></div>
+                  <div><span class="prompt-number">02</span><h3>选电影模块</h3></div>
                   <button class="text-action" type="button" data-reset-prompt="recommendation">恢复默认</button>
                 </div>
                 <p>负责理解口味或现实烦恼，并从去重后的真实候选中给出推荐。</p>
-                <label class="sr-only" for="recommendation-prompt">找电影 Agent 系统提示词</label>
+                <label class="sr-only" for="recommendation-prompt">选电影模块提示词</label>
                 <textarea id="recommendation-prompt" rows="24" minlength="20" maxlength="30000" required></textarea>
                 <span id="recommendation-count" class="character-count"></span>
               </article>
             </div>
-            <div class="prompt-actions">
+            <div id="prompt-actions" class="prompt-actions" hidden>
               <span id="prompt-save-result" class="action-result" role="status" aria-live="polite"></span>
               <button class="button button-primary" type="submit">保存两套提示词</button>
             </div>
           </form>
+        </section>
+
+        <section id="skill-settings" class="admin-section prompt-section">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">RUNTIME SKILLS</p>
+              <h2>Skill 管理</h2>
+              <p>管理三个固定内置 Skill。修改先保存为草稿，明确发布后才进入运行时；Skill 不能改变公共核心和服务端工具权限。</p>
+            </div>
+          </div>
+          <div class="management-browser" aria-live="polite">
+            <div id="skill-management-list" class="management-selector-list skill-management-list" aria-label="Skill 名称列表"></div>
+            <div id="skill-management-detail" class="management-detail"></div>
+          </div>
         </section>
 
         <section id="invite-settings" class="admin-section invitation-section">
@@ -365,22 +505,26 @@
             <form id="generate-form" class="generate-form">
               <label for="invite-count">生成数量</label>
               <input id="invite-count" type="number" min="1" max="100" value="5">
+              <label for="invite-note">本次备注</label>
+              <input id="invite-note" type="text" maxlength="200" placeholder="例如：9 月内测用户 / 合作方名称">
               <button class="button button-primary" type="submit">生成邀请码</button>
             </form>
           </div>
 
           <section id="new-codes" class="new-codes" hidden aria-live="polite">
             <div>
-              <p class="eyebrow">仅显示这一次</p>
-              <h3>请立即复制并安全发放</h3>
+              <p class="eyebrow">可再次复制</p>
+              <h3>现在复制，或稍后从列表复制</h3>
             </div>
             <button id="copy-codes" class="button button-secondary" type="button">复制全部</button>
             <pre id="codes-output"></pre>
           </section>
 
+          <p id="invite-storage-note" class="invite-storage-note" role="status" hidden></p>
+
           <div class="admin-table-wrap">
             <table>
-              <thead><tr><th>识别码</th><th>状态</th><th>账户</th><th>创建时间</th><th>激活时间</th><th><span class="sr-only">操作</span></th></tr></thead>
+              <thead><tr><th>邀请码</th><th>状态</th><th>账户</th><th>备注</th><th>模型调用</th><th>电影 / 对话</th><th>创建时间</th><th>激活时间</th><th><span class="sr-only">操作</span></th></tr></thead>
               <tbody id="invite-rows"></tbody>
             </table>
           </div>
@@ -388,7 +532,19 @@
       </section>
     </main>
 
+    <dialog id="invite-conversations-dialog" class="admin-dialog">
+      <div class="admin-dialog-head">
+        <div>
+          <p class="eyebrow">CONVERSATION RECORDS</p>
+          <h2 id="invite-conversations-title">邀请码对话记录</h2>
+          <p id="invite-conversations-summary"></p>
+        </div>
+        <button id="invite-conversations-close" class="button button-secondary" type="button">关闭</button>
+      </div>
+      <div id="invite-conversations-content" class="conversation-records" aria-live="polite"></div>
+    </dialog>
+
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/admin.js?v=9" defer></script>
+    <script src="/admin.js?v=20" defer></script>
   </body>
 </html>

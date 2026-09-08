@@ -38,6 +38,16 @@ def normalize(value: str) -> str:
     return re.sub(r"[\s·:：,，。.!！?？'\"《》〈〉()（）\-_]", "", value).lower()
 
 
+def movie_recency_key(movie: dict[str, Any]) -> tuple[int, int, int]:
+    """Known release dates first, newest first; absent date parts remain unknown."""
+    release = str(movie.get("release_date") or "")
+    match = re.fullmatch(r"([0-9]{4})(?:-([0-9]{2})-([0-9]{2}))?", release)
+    year = int(match[1]) if match else int(movie.get("year") or 0)
+    month = int(match[2] or 0) if match else 0
+    day = int(match[3] or 0) if match else 0
+    return -year, -month, -day
+
+
 class MovieCatalog:
     def __init__(self, store: Store, seed_path: Path):
         self.store = store
@@ -50,7 +60,9 @@ class MovieCatalog:
         self.store.upsert_movies(records)
         return len(records)
 
-    def search(self, query: str, limit: int = 8) -> list[dict[str, Any]]:
+    def search(
+        self, query: str, limit: int = 8, *, newest_first: bool = False
+    ) -> list[dict[str, Any]]:
         needle = normalize(query)
         if not needle:
             return []
@@ -70,7 +82,10 @@ class MovieCatalog:
             if score:
                 score += max(0, 20 - int(movie["popularity_rank"]))
                 scored.append((score, movie))
-        scored.sort(key=lambda item: (-item[0], item[1]["popularity_rank"]))
+        scored.sort(key=lambda item: (
+            *(movie_recency_key(item[1]) if newest_first else ()),
+            -item[0], item[1]["popularity_rank"],
+        ))
         return [movie for _score, movie in scored[:limit]]
 
     def detect_in_text(self, text: str) -> list[dict[str, Any]]:
@@ -88,6 +103,7 @@ class MovieCatalog:
         request: str,
         limit: int = 3,
         include_recent: bool = False,
+        candidate_ids: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         watched = self.store.watched_ids(account_id)
         persistently_excluded = self.store.persistently_excluded_ids(account_id)
@@ -101,6 +117,8 @@ class MovieCatalog:
 
         ranked: list[tuple[float, dict[str, Any], list[str]]] = []
         for movie in self.store.all_movies():
+            if candidate_ids is not None and movie["id"] not in candidate_ids:
+                continue
             if movie["id"] in watched or movie["id"] in persistently_excluded or movie["id"] in recent:
                 continue
             searchable_tags = {

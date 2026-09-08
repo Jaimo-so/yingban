@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
+from urllib.parse import urlencode
 
 
 INVITE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -40,20 +41,65 @@ def utc_now() -> str:
 
 
 class Store:
-    def __init__(self, path: Path, invite_pepper: str, session_secret: str):
-        self.path = Path(path)
+    def __init__(
+        self,
+        path: Path,
+        invite_pepper: str,
+        session_secret: str,
+        *,
+        journal_mode: str = "WAL",
+        vfs: str = "",
+        required_mount: str | Path | None = None,
+    ):
+        self.path = Path(path).expanduser().resolve()
         self.invite_pepper = invite_pepper.encode("utf-8")
         self.session_secret = session_secret.encode("utf-8")
+        self.journal_mode = journal_mode.strip().upper()
+        if self.journal_mode not in {"WAL", "DELETE"}:
+            raise ValueError(
+                "journal_mode must be WAL for local storage or DELETE for network storage"
+            )
+        self.vfs = vfs.strip()
+        if self.vfs not in {"", "unix-dotfile"}:
+            raise ValueError("vfs must be empty (platform default) or unix-dotfile")
+        if self.vfs == "unix-dotfile" and self.journal_mode != "DELETE":
+            raise ValueError("unix-dotfile requires journal_mode=DELETE")
+        self.required_mount = Path(required_mount).resolve() if required_mount else None
+        if self.required_mount:
+            if not self.required_mount.is_mount() or not self.path.is_relative_to(self.required_mount):
+                raise RuntimeError("required database mount is missing or does not contain database")
+            if not self.path.is_file():
+                raise RuntimeError("persistent database is missing; restore it before starting")
         self._schema_lock = threading.Lock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.initialize()
 
     def connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=10, factory=ClosingConnection)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA journal_mode = WAL")
-        return connection
+        if self.required_mount and not self.required_mount.is_mount():
+            raise RuntimeError("required database mount is missing")
+        options = {"mode": "rw" if self.required_mount else "rwc"}
+        if self.vfs:
+            options["vfs"] = self.vfs
+        connection = sqlite3.connect(
+            self.path.as_uri() + "?" + urlencode(options),
+            uri=True, timeout=10, factory=ClosingConnection,
+        )
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            actual_mode = connection.execute(
+                f"PRAGMA journal_mode = {self.journal_mode}"
+            ).fetchone()[0]
+            if str(actual_mode).upper() != self.journal_mode:
+                raise RuntimeError(
+                    f"SQLite refused journal_mode={self.journal_mode}; got {actual_mode}"
+                )
+            if self.journal_mode == "DELETE":
+                connection.execute("PRAGMA synchronous = FULL")
+            return connection
+        except BaseException:
+            connection.close()
+            raise
 
     @contextmanager
     def transaction(self, immediate: bool = False) -> Iterator[sqlite3.Connection]:
@@ -83,6 +129,7 @@ class Store:
                     id TEXT PRIMARY KEY,
                     code_digest TEXT NOT NULL UNIQUE,
                     code_hint TEXT NOT NULL,
+                    note TEXT NOT NULL DEFAULT '',
                     status TEXT NOT NULL
                         CHECK(status IN ('issued', 'active', 'revoked')),
                     account_id TEXT REFERENCES accounts(id),
@@ -125,6 +172,7 @@ class Store:
                     poster_url TEXT NOT NULL DEFAULT '',
                     source_url TEXT NOT NULL DEFAULT '',
                     external_ids_json TEXT NOT NULL DEFAULT '{}',
+                    release_date TEXT NOT NULL DEFAULT '',
                     updated_at TEXT NOT NULL
                 );
 
@@ -225,6 +273,17 @@ class Store:
                     UNIQUE(account_id, movie_id)
                 );
 
+                CREATE TABLE IF NOT EXISTS conversation_records (
+                    id TEXT NOT NULL,
+                    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                    movie_id TEXT NOT NULL REFERENCES movies(id) ON DELETE CASCADE,
+                    messages_json TEXT NOT NULL DEFAULT '[]',
+                    skill_key TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(account_id, id)
+                );
+
                 CREATE TABLE IF NOT EXISTS weekly_recommendations (
                     id TEXT PRIMARY KEY,
                     account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -320,6 +379,74 @@ class Store:
                     created_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS skill_definitions (
+                    skill_key TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    module TEXT NOT NULL CHECK(module IN ('discussion', 'recommendation')),
+                    activation_mode TEXT NOT NULL CHECK(activation_mode IN (
+                        'explicit_or_intent', 'module_default'
+                    )),
+                    enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+                    active_version INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS skill_versions (
+                    skill_key TEXT NOT NULL REFERENCES skill_definitions(skill_key) ON DELETE CASCADE,
+                    version INTEGER NOT NULL,
+                    instructions TEXT NOT NULL,
+                    input_contract_json TEXT NOT NULL DEFAULT '{}',
+                    output_contract_json TEXT NOT NULL DEFAULT '{}',
+                    change_note TEXT NOT NULL DEFAULT '',
+                    published_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(skill_key, version)
+                );
+
+                CREATE TABLE IF NOT EXISTS viewing_cognition_entries (
+                    id TEXT PRIMARY KEY,
+                    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                    movie_id TEXT NOT NULL REFERENCES movies(id) ON DELETE CASCADE,
+                    viewing_round INTEGER NOT NULL CHECK(viewing_round >= 1),
+                    stage TEXT NOT NULL CHECK(stage IN (
+                        'first_impression', 'post_discussion', 'revisit',
+                        'rewatch', 'retrospective'
+                    )),
+                    watched_at TEXT,
+                    edition TEXT NOT NULL DEFAULT '',
+                    raw_impression TEXT NOT NULL,
+                    synthesis TEXT NOT NULL,
+                    dimensions_json TEXT NOT NULL DEFAULT '[]',
+                    status TEXT NOT NULL DEFAULT 'confirmed'
+                        CHECK(status IN ('confirmed', 'deleted')),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    deleted_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS content_drafts (
+                    id TEXT PRIMARY KEY,
+                    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                    movie_id TEXT NOT NULL REFERENCES movies(id) ON DELETE CASCADE,
+                    content_scene TEXT NOT NULL CHECK(content_scene IN (
+                        'xiaohongshu', 'formal_review', 'promotion'
+                    )),
+                    version INTEGER NOT NULL,
+                    content TEXT NOT NULL,
+                    source_material TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'draft'
+                        CHECK(status IN ('draft', 'confirmed', 'deleted')),
+                    based_on_version INTEGER,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    confirmed_at TEXT,
+                    deleted_at TEXT,
+                    UNIQUE(account_id, movie_id, content_scene, version)
+                );
+
                 CREATE TABLE IF NOT EXISTS app_settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL,
@@ -340,6 +467,8 @@ class Store:
                     ON movie_reflections(account_id, movie_id, version DESC);
                 CREATE INDEX IF NOT EXISTS idx_conversation_summaries_account
                     ON conversation_summaries(account_id, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_conversation_records_account_movie
+                    ON conversation_records(account_id, movie_id, updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_weekly_recommendations_account
                     ON weekly_recommendations(account_id, week_key DESC);
                 CREATE INDEX IF NOT EXISTS idx_monthly_recaps_account
@@ -352,16 +481,31 @@ class Store:
                     ON product_events(event_name, created_at);
                 CREATE INDEX IF NOT EXISTS idx_model_usage_operation_time
                     ON model_usage_events(operation, created_at);
+                CREATE INDEX IF NOT EXISTS idx_skill_versions_key_version
+                    ON skill_versions(skill_key, version DESC);
+                CREATE INDEX IF NOT EXISTS idx_cognition_account_movie
+                    ON viewing_cognition_entries(account_id, movie_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_content_drafts_account_movie
+                    ON content_drafts(account_id, movie_id, updated_at DESC);
                 """
             )
             movie_columns = {
                 str(row["name"])
                 for row in connection.execute("PRAGMA table_info(movies)").fetchall()
             }
+            invite_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(invite_codes)").fetchall()
+            }
+            if "note" not in invite_columns:
+                connection.execute(
+                    "ALTER TABLE invite_codes ADD COLUMN note TEXT NOT NULL DEFAULT ''"
+                )
             for column, definition in (
                 ("poster_url", "TEXT NOT NULL DEFAULT ''"),
                 ("source_url", "TEXT NOT NULL DEFAULT ''"),
                 ("external_ids_json", "TEXT NOT NULL DEFAULT '{}'"),
+                ("release_date", "TEXT NOT NULL DEFAULT ''"),
             ):
                 if column not in movie_columns:
                     connection.execute(f"ALTER TABLE movies ADD COLUMN {column} {definition}")
@@ -431,6 +575,454 @@ class Store:
                 """,
                 [(key, str(value), now) for key, value in values.items()],
             )
+
+    def ensure_builtin_skills(self, definitions: tuple[dict[str, Any], ...]) -> None:
+        """Seed immutable built-in identities without overwriting administrator versions."""
+        now = utc_now()
+        with self.transaction(immediate=True) as connection:
+            for definition in definitions:
+                skill_key = str(definition["key"])
+                exists = connection.execute(
+                    "SELECT 1 FROM skill_definitions WHERE skill_key = ?", (skill_key,)
+                ).fetchone()
+                if exists:
+                    continue
+                connection.execute(
+                    """
+                    INSERT INTO skill_definitions (
+                        skill_key, name, description, module, activation_mode,
+                        enabled, active_version, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?)
+                    """,
+                    (
+                        skill_key,
+                        str(definition["name"]),
+                        str(definition["description"]),
+                        str(definition["module"]),
+                        str(definition["activation_mode"]),
+                        now,
+                        now,
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO skill_versions (
+                        skill_key, version, instructions, input_contract_json,
+                        output_contract_json, change_note, published_at,
+                        created_at, updated_at
+                    ) VALUES (?, 1, ?, ?, ?, '内置初始版本', ?, ?, ?)
+                    """,
+                    (
+                        skill_key,
+                        str(definition["instructions"]),
+                        json.dumps(definition.get("input_contract", {}), ensure_ascii=False),
+                        json.dumps(definition.get("output_contract", {}), ensure_ascii=False),
+                        now,
+                        now,
+                        now,
+                    ),
+                )
+
+    @staticmethod
+    def _decode_skill_row(row: dict[str, Any]) -> dict[str, Any]:
+        row["enabled"] = bool(row.get("enabled"))
+        for key in ("input_contract_json", "output_contract_json"):
+            if key in row:
+                row[key.removesuffix("_json")] = json.loads(row.pop(key) or "{}")
+        return row
+
+    def skill_bundle(self, skill_key: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            definition = connection.execute(
+                "SELECT * FROM skill_definitions WHERE skill_key = ?", (skill_key,)
+            ).fetchone()
+            if definition is None:
+                return None
+            versions = connection.execute(
+                """
+                SELECT version, instructions, input_contract_json,
+                       output_contract_json, change_note, published_at,
+                       created_at, updated_at
+                FROM skill_versions
+                WHERE skill_key = ?
+                ORDER BY version DESC
+                """,
+                (skill_key,),
+            ).fetchall()
+        decoded_versions = [self._decode_skill_row(dict(row)) for row in versions]
+        result = self._decode_skill_row(dict(definition))
+        active_version = int(result["active_version"])
+        result["active"] = next(
+            (item for item in decoded_versions if int(item["version"]) == active_version), None
+        )
+        result["draft"] = next(
+            (item for item in decoded_versions if item.get("published_at") is None), None
+        )
+        result["versions"] = [
+            {
+                "version": item["version"],
+                "change_note": item["change_note"],
+                "published_at": item["published_at"],
+                "is_active": int(item["version"]) == active_version,
+            }
+            for item in decoded_versions
+            if item.get("published_at") is not None
+        ]
+        return result
+
+    def list_skills(self) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            keys = [
+                str(row["skill_key"])
+                for row in connection.execute(
+                    """
+                    SELECT skill_key FROM skill_definitions
+                    ORDER BY CASE module WHEN 'discussion' THEN 0 ELSE 1 END, created_at
+                    """
+                ).fetchall()
+            ]
+        return [bundle for key in keys if (bundle := self.skill_bundle(key)) is not None]
+
+    def active_skill(self, skill_key: str, module: str | None = None) -> dict[str, Any] | None:
+        bundle = self.skill_bundle(skill_key)
+        if not bundle or not bundle["enabled"] or bundle.get("active") is None:
+            return None
+        if module and bundle["module"] != module:
+            return None
+        return bundle
+
+    def set_skill_enabled(self, skill_key: str, enabled: bool) -> dict[str, Any]:
+        with self.connect() as connection:
+            result = connection.execute(
+                "UPDATE skill_definitions SET enabled = ?, updated_at = ? WHERE skill_key = ?",
+                (int(bool(enabled)), utc_now(), skill_key),
+            )
+        if result.rowcount != 1:
+            raise ValueError("Skill 不存在")
+        return self.skill_bundle(skill_key) or {}
+
+    def save_skill_draft(
+        self,
+        skill_key: str,
+        instructions: str,
+        input_contract: dict[str, Any],
+        output_contract: dict[str, Any],
+        change_note: str,
+    ) -> dict[str, Any]:
+        clean = str(instructions).strip()
+        if not 100 <= len(clean) <= 30_000:
+            raise ValueError("Skill 指令长度必须在 100 到 30000 个字符之间")
+        if not isinstance(input_contract, dict) or not isinstance(output_contract, dict):
+            raise ValueError("Skill 输入和输出契约必须是 JSON 对象")
+        note = str(change_note).strip()[:500]
+        now = utc_now()
+        with self.transaction(immediate=True) as connection:
+            definition = connection.execute(
+                "SELECT 1 FROM skill_definitions WHERE skill_key = ?", (skill_key,)
+            ).fetchone()
+            if definition is None:
+                raise ValueError("Skill 不存在")
+            draft = connection.execute(
+                """
+                SELECT version FROM skill_versions
+                WHERE skill_key = ? AND published_at IS NULL
+                ORDER BY version DESC LIMIT 1
+                """,
+                (skill_key,),
+            ).fetchone()
+            version = int(draft["version"]) if draft else int(
+                connection.execute(
+                    "SELECT COALESCE(MAX(version), 0) + 1 FROM skill_versions WHERE skill_key = ?",
+                    (skill_key,),
+                ).fetchone()[0]
+            )
+            connection.execute(
+                """
+                INSERT INTO skill_versions (
+                    skill_key, version, instructions, input_contract_json,
+                    output_contract_json, change_note, published_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
+                ON CONFLICT(skill_key, version) DO UPDATE SET
+                    instructions = excluded.instructions,
+                    input_contract_json = excluded.input_contract_json,
+                    output_contract_json = excluded.output_contract_json,
+                    change_note = excluded.change_note,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    skill_key,
+                    version,
+                    clean,
+                    json.dumps(input_contract, ensure_ascii=False),
+                    json.dumps(output_contract, ensure_ascii=False),
+                    note,
+                    now,
+                    now,
+                ),
+            )
+            connection.execute(
+                "UPDATE skill_definitions SET updated_at = ? WHERE skill_key = ?",
+                (now, skill_key),
+            )
+        return self.skill_bundle(skill_key) or {}
+
+    def publish_skill_draft(self, skill_key: str) -> dict[str, Any]:
+        now = utc_now()
+        with self.transaction(immediate=True) as connection:
+            draft = connection.execute(
+                """
+                SELECT version FROM skill_versions
+                WHERE skill_key = ? AND published_at IS NULL
+                ORDER BY version DESC LIMIT 1
+                """,
+                (skill_key,),
+            ).fetchone()
+            if draft is None:
+                raise ValueError("没有可发布的 Skill 草稿")
+            version = int(draft["version"])
+            connection.execute(
+                """UPDATE skill_versions SET published_at = ?, updated_at = ?
+                   WHERE skill_key = ? AND version = ?""",
+                (now, now, skill_key, version),
+            )
+            connection.execute(
+                """UPDATE skill_definitions SET active_version = ?, updated_at = ?
+                   WHERE skill_key = ?""",
+                (version, now, skill_key),
+            )
+        return self.skill_bundle(skill_key) or {}
+
+    def rollback_skill(self, skill_key: str) -> dict[str, Any]:
+        with self.transaction(immediate=True) as connection:
+            definition = connection.execute(
+                "SELECT active_version FROM skill_definitions WHERE skill_key = ?", (skill_key,)
+            ).fetchone()
+            if definition is None:
+                raise ValueError("Skill 不存在")
+            previous = connection.execute(
+                """
+                SELECT version FROM skill_versions
+                WHERE skill_key = ? AND published_at IS NOT NULL AND version < ?
+                ORDER BY version DESC LIMIT 1
+                """,
+                (skill_key, int(definition["active_version"])),
+            ).fetchone()
+            if previous is None:
+                raise ValueError("当前 Skill 没有可回滚的历史版本")
+            connection.execute(
+                "UPDATE skill_definitions SET active_version = ?, updated_at = ? WHERE skill_key = ?",
+                (int(previous["version"]), utc_now(), skill_key),
+            )
+        return self.skill_bundle(skill_key) or {}
+
+    def save_cognition_entry(
+        self,
+        account_id: str,
+        movie_id: str,
+        viewing_round: int,
+        stage: str,
+        raw_impression: str,
+        synthesis: str,
+        dimensions: list[Any],
+        watched_at: str | None = None,
+        edition: str = "",
+    ) -> dict[str, Any]:
+        stages = {
+            "first_impression", "post_discussion", "revisit", "rewatch", "retrospective"
+        }
+        try:
+            viewing_round = int(viewing_round)
+        except (TypeError, ValueError) as error:
+            raise ValueError("观看轮次必须是正整数") from error
+        if viewing_round < 1 or viewing_round > 999:
+            raise ValueError("观看轮次必须在 1 到 999 之间")
+        if stage not in stages:
+            raise ValueError("观影阶段无效")
+        raw = str(raw_impression).strip()
+        summary = str(synthesis).strip()
+        if not 1 <= len(raw) <= 6000:
+            raise ValueError("本次原始感受必须在 1 到 6000 个字符之间")
+        if not 1 <= len(summary) <= 6000:
+            raise ValueError("本次认知整理必须在 1 到 6000 个字符之间")
+        clean_date = str(watched_at or "").strip()
+        if clean_date:
+            try:
+                datetime.fromisoformat(clean_date)
+            except ValueError as error:
+                raise ValueError("观看日期格式无效") from error
+        clean_dimensions: list[str] = []
+        for item in dimensions[:20] if isinstance(dimensions, list) else []:
+            value = str(item).strip()
+            if value and value not in clean_dimensions:
+                clean_dimensions.append(value[:80])
+        now = utc_now()
+        with self.transaction(immediate=True) as connection:
+            state = connection.execute(
+                """SELECT state FROM user_movie_states
+                   WHERE account_id = ? AND movie_id = ?""",
+                (account_id, movie_id),
+            ).fetchone()
+            if state is None or state["state"] != "watched":
+                raise ValueError("只有已经确认看过的电影可以保存阶段认知")
+            entry_id = "cog_" + secrets.token_hex(8)
+            connection.execute(
+                """
+                INSERT INTO viewing_cognition_entries (
+                    id, account_id, movie_id, viewing_round, stage, watched_at,
+                    edition, raw_impression, synthesis, dimensions_json,
+                    status, created_at, updated_at, deleted_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, ?, NULL)
+                """,
+                (
+                    entry_id,
+                    account_id,
+                    movie_id,
+                    viewing_round,
+                    stage,
+                    clean_date or None,
+                    str(edition).strip()[:200],
+                    raw,
+                    summary,
+                    json.dumps(clean_dimensions, ensure_ascii=False),
+                    now,
+                    now,
+                ),
+            )
+        return self.cognition_bundle(account_id, movie_id)
+
+    def cognition_bundle(self, account_id: str, movie_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, movie_id, viewing_round, stage, watched_at, edition,
+                       raw_impression, synthesis, dimensions_json, created_at, updated_at
+                FROM viewing_cognition_entries
+                WHERE account_id = ? AND movie_id = ? AND status = 'confirmed'
+                ORDER BY COALESCE(watched_at, created_at), created_at
+                """,
+                (account_id, movie_id),
+            ).fetchall()
+        entries: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["dimensions"] = json.loads(item.pop("dimensions_json") or "[]")
+            entries.append(item)
+        comparison = None
+        if len(entries) >= 2:
+            previous, current = entries[-2], entries[-1]
+            previous_dimensions = set(previous["dimensions"])
+            current_dimensions = set(current["dimensions"])
+            comparison = {
+                "previous_entry_id": previous["id"],
+                "current_entry_id": current["id"],
+                "previous_round": previous["viewing_round"],
+                "current_round": current["viewing_round"],
+                "previous_synthesis": previous["synthesis"],
+                "current_synthesis": current["synthesis"],
+                "unchanged_dimensions": sorted(previous_dimensions & current_dimensions),
+                "new_dimensions": sorted(current_dimensions - previous_dimensions),
+                "not_repeated_dimensions": sorted(previous_dimensions - current_dimensions),
+            }
+        return {"entries": entries, "comparison": comparison}
+
+    def delete_cognition_entry(self, account_id: str, entry_id: str) -> bool:
+        now = utc_now()
+        with self.connect() as connection:
+            result = connection.execute(
+                """
+                UPDATE viewing_cognition_entries
+                SET raw_impression = '', synthesis = '', dimensions_json = '[]',
+                    status = 'deleted', updated_at = ?, deleted_at = ?
+                WHERE account_id = ? AND id = ? AND status != 'deleted'
+                """,
+                (now, now, account_id, entry_id),
+            )
+        return result.rowcount > 0
+
+    def create_content_draft(
+        self,
+        account_id: str,
+        movie_id: str,
+        content_scene: str,
+        content: str,
+        source_material: str = "",
+    ) -> dict[str, Any]:
+        if content_scene not in {"xiaohongshu", "formal_review", "promotion"}:
+            raise ValueError("内容场景无效")
+        clean = str(content).strip()
+        if not 20 <= len(clean) <= 30_000:
+            raise ValueError("内容草稿必须在 20 到 30000 个字符之间")
+        source = str(source_material).strip()[:6000]
+        now = utc_now()
+        with self.transaction(immediate=True) as connection:
+            state = connection.execute(
+                """SELECT state FROM user_movie_states
+                   WHERE account_id = ? AND movie_id = ?""",
+                (account_id, movie_id),
+            ).fetchone()
+            if state is None or state["state"] != "watched":
+                raise ValueError("只有已经确认看过的电影可以保存内容草稿")
+            version = int(
+                connection.execute(
+                    """
+                    SELECT COALESCE(MAX(version), 0) + 1 FROM content_drafts
+                    WHERE account_id = ? AND movie_id = ? AND content_scene = ?
+                    """,
+                    (account_id, movie_id, content_scene),
+                ).fetchone()[0]
+            )
+            based_on = version - 1 if version > 1 else None
+            draft_id = "draft_" + secrets.token_hex(8)
+            connection.execute(
+                """
+                INSERT INTO content_drafts (
+                    id, account_id, movie_id, content_scene, version, content,
+                    source_material, status, based_on_version, created_at,
+                    updated_at, confirmed_at, deleted_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, NULL, NULL)
+                """,
+                (
+                    draft_id,
+                    account_id,
+                    movie_id,
+                    content_scene,
+                    version,
+                    clean,
+                    source,
+                    based_on,
+                    now,
+                    now,
+                ),
+            )
+        return self.content_draft_bundle(account_id, movie_id)
+
+    def content_draft_bundle(self, account_id: str, movie_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, movie_id, content_scene, version, content, source_material,
+                       status, based_on_version, created_at, updated_at, confirmed_at
+                FROM content_drafts
+                WHERE account_id = ? AND movie_id = ? AND status != 'deleted'
+                ORDER BY updated_at DESC
+                """,
+                (account_id, movie_id),
+            ).fetchall()
+        return {"items": [dict(row) for row in rows]}
+
+    def delete_content_draft(self, account_id: str, draft_id: str) -> bool:
+        now = utc_now()
+        with self.connect() as connection:
+            result = connection.execute(
+                """
+                UPDATE content_drafts
+                SET content = '', source_material = '', status = 'deleted',
+                    updated_at = ?, deleted_at = ?
+                WHERE account_id = ? AND id = ? AND status != 'deleted'
+                """,
+                (now, now, account_id, draft_id),
+            )
+        return result.rowcount > 0
 
     def account_profile(self, account_id: str) -> dict[str, Any]:
         with self.connect() as connection:
@@ -579,8 +1171,8 @@ class Store:
 
     def complete_onboarding(self, account_id: str) -> dict[str, Any]:
         items = self.onboarding_movies(account_id)
-        if len(items) != 5 or any(item.get("sentiment") not in {"positive", "neutral", "negative"} for item in items):
-            raise ValueError("需要恰好选择 5 部电影并完成每部反馈")
+        if not 1 <= len(items) <= 5 or any(item.get("sentiment") not in {"positive", "neutral", "negative"} for item in items):
+            raise ValueError("请选择 1～5 部电影并完成每部反馈")
 
         scores: dict[tuple[str, str], int] = {}
         evidence: dict[tuple[str, str], list[dict[str, Any]]] = {}
@@ -625,9 +1217,9 @@ class Store:
             summary = "目前更偏向" + "、".join(preferred)
             if avoided:
                 summary += "；对" + "、".join(avoided) + "暂时更谨慎"
-            summary += "。这些判断只来自你选的 5 部电影，可以随时修正。"
+            summary += f"。这些判断只来自你选的 {len(items)} 部电影，可以随时修正。"
         else:
-            summary = "这 5 部电影呈现出比较开放的口味，还没有形成强偏好；之后的反馈会继续修正。"
+            summary = f"这 {len(items)} 部电影呈现出比较开放的口味，还没有形成强偏好；之后的反馈会继续修正。"
 
         now = utc_now()
         with self.transaction(immediate=True) as connection:
@@ -702,32 +1294,58 @@ class Store:
             self.session_secret, token.encode("utf-8"), hashlib.sha256
         ).hexdigest()
 
-    def _new_invite_code(self) -> str:
-        groups = [
-            "".join(secrets.choice(INVITE_ALPHABET) for _ in range(5))
-            for _ in range(4)
+    def _recoverable_invite_code(self, invite_id: str) -> str:
+        """Derive a copyable invite without storing its plaintext in SQLite."""
+        digest = hmac.new(
+            self.invite_pepper,
+            f"yingban-invite-code-v1:{invite_id}".encode("utf-8"),
+            hashlib.sha256,
+        ).digest()
+        # INVITE_ALPHABET has exactly 32 symbols, so every character carries
+        # five bits. Twenty characters preserve the existing 100-bit code space.
+        value = int.from_bytes(digest[:13], "big") >> 4
+        characters = [
+            INVITE_ALPHABET[(value >> shift) & 31]
+            for shift in range(95, -1, -5)
         ]
+        groups = ["".join(characters[index:index + 5]) for index in range(0, 20, 5)]
         return "YB-" + "-".join(groups)
 
-    def generate_invites(self, count: int) -> list[str]:
+    def _recover_invite_code(self, invite_id: str, code_digest: str) -> str | None:
+        code = self._recoverable_invite_code(invite_id)
+        if hmac.compare_digest(self._invite_digest(code), str(code_digest)):
+            return code
+        return None
+
+    @staticmethod
+    def _clean_invite_note(note: str) -> str:
+        clean = " ".join(str(note).split())
+        if len(clean) > 200:
+            raise ValueError("邀请码备注不能超过 200 个字符")
+        return clean
+
+    def generate_invites(self, count: int, note: str = "") -> list[str]:
         if count < 1 or count > 100:
             raise ValueError("count must be between 1 and 100")
+        clean_note = self._clean_invite_note(note)
         codes: list[str] = []
         with self.transaction(immediate=True) as connection:
             for _ in range(count):
                 for _attempt in range(10):
-                    code = self._new_invite_code()
+                    invite_id = "inv_" + secrets.token_hex(8)
+                    code = self._recoverable_invite_code(invite_id)
                     try:
                         connection.execute(
                             """
                             INSERT INTO invite_codes
-                                (id, code_digest, code_hint, status, created_at)
-                            VALUES (?, ?, ?, 'issued', ?)
+                                (id, code_digest, code_hint, note, status, created_at)
+                            VALUES (?, ?, ?, ?, 'issued', ?)
                             """,
                             (
-                                "inv_" + secrets.token_hex(8),
+                                invite_id,
                                 self._invite_digest(code),
                                 code[-5:],
+                                clean_note,
                                 utc_now(),
                             ),
                         )
@@ -853,12 +1471,156 @@ class Store:
         with self.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, code_hint, status, account_id, created_at,
-                       activated_at, revoked_at, replaced_by
-                FROM invite_codes ORDER BY created_at DESC
+                SELECT i.id, i.code_digest, i.code_hint, i.note, i.status, i.account_id,
+                       i.created_at, i.activated_at, i.revoked_at, i.replaced_by,
+                       CASE WHEN i.account_id IS NULL THEN 0 ELSE (
+                           SELECT COUNT(*) FROM model_usage_events u
+                           WHERE u.account_id = i.account_id
+                             AND u.provider != 'deterministic'
+                       ) END AS model_calls,
+                       CASE WHEN i.account_id IS NULL THEN 0 ELSE (
+                           SELECT COUNT(*) FROM conversation_records c
+                           WHERE c.account_id = i.account_id
+                       ) END AS conversation_count,
+                       CASE WHEN i.account_id IS NULL THEN 0 ELSE (
+                           SELECT COUNT(DISTINCT c.movie_id) FROM conversation_records c
+                           WHERE c.account_id = i.account_id
+                       ) END AS movie_count
+                FROM invite_codes i ORDER BY i.created_at DESC
                 """
             ).fetchall()
-        return [dict(row) for row in rows]
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["copy_available"] = bool(
+                item["status"] != "revoked"
+                and self._recover_invite_code(item["id"], item["code_digest"])
+            )
+            item.pop("code_digest", None)
+            items.append(item)
+        return items
+
+    def invite_code_for_admin(self, invite_id: str) -> str:
+        with self.connect() as connection:
+            invite = connection.execute(
+                "SELECT id, code_digest, status FROM invite_codes WHERE id = ?",
+                (invite_id,),
+            ).fetchone()
+        if invite is None:
+            raise InviteError("邀请码不存在")
+        if invite["status"] == "revoked":
+            raise InviteError("已停用的邀请码不可复制")
+        code = self._recover_invite_code(str(invite["id"]), str(invite["code_digest"]))
+        if code is None:
+            raise InviteError("该邀请码生成于保存功能上线前，或邀请码密钥已经更换，无法恢复完整内容")
+        return code
+
+    def update_invite_note(self, invite_id: str, note: str) -> dict[str, Any]:
+        clean_note = self._clean_invite_note(note)
+        with self.connect() as connection:
+            result = connection.execute(
+                "UPDATE invite_codes SET note = ? WHERE id = ?",
+                (clean_note, invite_id),
+            )
+            if result.rowcount != 1:
+                raise InviteError("邀请码不存在")
+        return next(item for item in self.list_invites() if item["id"] == invite_id)
+
+    def save_conversation_record(
+        self,
+        account_id: str,
+        conversation_id: str,
+        movie_id: str,
+        messages: list[dict[str, Any]],
+        skill_key: str | None = None,
+    ) -> dict[str, Any]:
+        clean_id = str(conversation_id).strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{8,100}", clean_id):
+            raise ValueError("对话标识无效")
+        if self.movie(movie_id) is None:
+            raise ValueError("电影不存在")
+        if not isinstance(messages, list):
+            raise ValueError("对话消息格式无效")
+        clean_messages: list[dict[str, str]] = []
+        total_characters = 0
+        for item in messages[-40:]:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role", ""))
+            content = str(item.get("content", "")).strip()
+            if role not in {"user", "assistant"} or not content:
+                continue
+            content = content[:6000]
+            total_characters += len(content)
+            if total_characters > 120_000:
+                raise ValueError("对话内容过长")
+            clean_messages.append({"role": role, "content": content})
+        if not clean_messages:
+            raise ValueError("对话消息不能为空")
+        clean_skill_key = str(skill_key or "").strip()[:100] or None
+        now = utc_now()
+        with self.connect() as connection:
+            existing = connection.execute(
+                "SELECT created_at FROM conversation_records WHERE account_id = ? AND id = ?",
+                (account_id, clean_id),
+            ).fetchone()
+            created_at = str(existing["created_at"]) if existing else now
+            connection.execute(
+                """INSERT INTO conversation_records (
+                       id, account_id, movie_id, messages_json, skill_key,
+                       created_at, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(account_id, id) DO UPDATE SET
+                       movie_id = excluded.movie_id,
+                       messages_json = excluded.messages_json,
+                       skill_key = excluded.skill_key,
+                       updated_at = excluded.updated_at""",
+                (
+                    clean_id,
+                    account_id,
+                    str(movie_id),
+                    json.dumps(clean_messages, ensure_ascii=False),
+                    clean_skill_key,
+                    created_at,
+                    now,
+                ),
+            )
+        return {
+            "id": clean_id,
+            "movie_id": str(movie_id),
+            "messages": clean_messages,
+            "skill_key": clean_skill_key,
+            "created_at": created_at,
+            "updated_at": now,
+        }
+
+    def invite_conversations(self, invite_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            invite = connection.execute(
+                """SELECT id, code_hint, note, status, account_id
+                   FROM invite_codes WHERE id = ?""",
+                (invite_id,),
+            ).fetchone()
+            if invite is None:
+                raise InviteError("邀请码不存在")
+            rows = []
+            if invite["account_id"]:
+                rows = connection.execute(
+                    """SELECT c.id, c.movie_id, c.messages_json, c.skill_key,
+                              c.created_at, c.updated_at,
+                              m.title_zh, m.title_original, m.year
+                       FROM conversation_records c
+                       JOIN movies m ON m.id = c.movie_id
+                       WHERE c.account_id = ?
+                       ORDER BY c.updated_at DESC""",
+                    (invite["account_id"],),
+                ).fetchall()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["messages"] = json.loads(item.pop("messages_json") or "[]")
+            items.append(item)
+        return {"invite": dict(invite), "items": items}
 
     def revoke_invite(self, invite_id: str) -> None:
         with self.transaction(immediate=True) as connection:
@@ -881,7 +1643,6 @@ class Store:
                 )
 
     def rotate_invite(self, invite_id: str) -> str:
-        new_code = self._new_invite_code()
         now = utc_now()
         with self.transaction(immediate=True) as connection:
             current = connection.execute(
@@ -890,17 +1651,19 @@ class Store:
             if current is None or current["status"] != "active":
                 raise InviteError("只有已激活的邀请码可以换发")
             new_id = "inv_" + secrets.token_hex(8)
+            new_code = self._recoverable_invite_code(new_id)
             connection.execute(
                 """
                 INSERT INTO invite_codes
-                    (id, code_digest, code_hint, status, account_id,
+                    (id, code_digest, code_hint, note, status, account_id,
                      created_at, activated_at)
-                VALUES (?, ?, ?, 'active', ?, ?, ?)
+                VALUES (?, ?, ?, ?, 'active', ?, ?, ?)
                 """,
                 (
                     new_id,
                     self._invite_digest(new_code),
                     new_code[-5:],
+                    str(current["note"] or ""),
                     current["account_id"],
                     now,
                     now,
@@ -929,8 +1692,9 @@ class Store:
                         id, title_zh, title_original, aliases_json, year,
                         directors_json, regions_json, genres_json, themes_json,
                         moods_json, content_notes_json, summary, popularity_rank,
-                        source, poster_url, source_url, external_ids_json, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        source, poster_url, source_url, external_ids_json, release_date,
+                        updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         title_zh = excluded.title_zh,
                         title_original = excluded.title_original,
@@ -957,6 +1721,10 @@ class Store:
                             WHEN excluded.external_ids_json != '{}' THEN excluded.external_ids_json
                             ELSE movies.external_ids_json
                         END,
+                        release_date = CASE
+                            WHEN excluded.release_date != '' THEN excluded.release_date
+                            ELSE movies.release_date
+                        END,
                         updated_at = excluded.updated_at
                     """,
                     (
@@ -977,6 +1745,7 @@ class Store:
                         str(record.get("poster_url", "")),
                         str(record.get("source_url", "")),
                         json.dumps(record.get("external_ids", {}), ensure_ascii=False),
+                        str(record.get("release_date", ""))[:10],
                         utc_now(),
                     ),
                 )
@@ -1010,6 +1779,49 @@ class Store:
                 (account_id, movie_id, state, source, rating, note, now, now),
             )
         return self.get_movie_state(account_id, movie_id) or {}
+
+    def transition_movie_state(
+        self,
+        account_id: str,
+        movie_id: str,
+        state: str,
+        source: str,
+    ) -> tuple[dict[str, Any], bool]:
+        """Change state once and report whether the durable state really changed."""
+        if state not in {"watched", "watchlist", "disliked"}:
+            raise ValueError("invalid movie state")
+        now = utc_now()
+        with self.transaction(immediate=True) as connection:
+            previous = connection.execute(
+                """
+                SELECT * FROM user_movie_states
+                WHERE account_id = ? AND movie_id = ?
+                """,
+                (account_id, movie_id),
+            ).fetchone()
+            if previous is not None and previous["state"] == state:
+                return dict(previous), False
+            connection.execute(
+                """
+                INSERT INTO user_movie_states
+                    (account_id, movie_id, state, source, rating, note,
+                     created_at, updated_at)
+                VALUES (?, ?, ?, ?, NULL, NULL, ?, ?)
+                ON CONFLICT(account_id, movie_id) DO UPDATE SET
+                    state = excluded.state,
+                    source = excluded.source,
+                    updated_at = excluded.updated_at
+                """,
+                (account_id, movie_id, state, source, now, now),
+            )
+            current = connection.execute(
+                """
+                SELECT * FROM user_movie_states
+                WHERE account_id = ? AND movie_id = ?
+                """,
+                (account_id, movie_id),
+            ).fetchone()
+        return (dict(current) if current is not None else {}), True
 
     def get_movie_state(self, account_id: str, movie_id: str) -> dict[str, Any] | None:
         with self.connect() as connection:
@@ -1216,6 +2028,20 @@ class Store:
             connection.execute(
                 """UPDATE movie_reflections
                    SET content = '', status = 'deleted', deleted_at = ?, updated_at = ?
+                   WHERE account_id = ? AND movie_id = ? AND status != 'deleted'""",
+                (now, now, account_id, movie_id),
+            )
+            connection.execute(
+                """UPDATE viewing_cognition_entries
+                   SET raw_impression = '', synthesis = '', dimensions_json = '[]',
+                       status = 'deleted', deleted_at = ?, updated_at = ?
+                   WHERE account_id = ? AND movie_id = ? AND status != 'deleted'""",
+                (now, now, account_id, movie_id),
+            )
+            connection.execute(
+                """UPDATE content_drafts
+                   SET content = '', source_material = '', status = 'deleted',
+                       deleted_at = ?, updated_at = ?
                    WHERE account_id = ? AND movie_id = ? AND status != 'deleted'""",
                 (now, now, account_id, movie_id),
             )
@@ -1617,7 +2443,8 @@ class Store:
         with self.connect() as connection:
             row = connection.execute(
                 """SELECT * FROM share_cards
-                   WHERE public_token = ? AND status = 'active' AND expires_at > ?""",
+                   WHERE public_token = ? AND status = 'active'
+                     AND revoked_at IS NULL AND expires_at > ?""",
                 (token, now),
             ).fetchone()
         result = self._decode_share_card(row)
@@ -1762,6 +2589,35 @@ class Store:
                 "SELECT * FROM movies WHERE id = ?", (movie_id,)
             ).fetchone()
         return self._decode_movie_row(dict(row)) if row else None
+
+    def has_poster_url(self, poster_url: str) -> bool:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM movies WHERE poster_url = ? LIMIT 1", (poster_url,)
+            ).fetchone()
+        return row is not None
+
+    def public_share_uses_poster_url(self, token: str, poster_url: str) -> bool:
+        """Return whether this active public share explicitly contains the poster."""
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT content_json FROM share_cards
+                   WHERE public_token = ? AND status = 'active'
+                     AND revoked_at IS NULL AND expires_at > ?""",
+                (token, utc_now()),
+            ).fetchone()
+        if row is None:
+            return False
+        try:
+            content = json.loads(str(row["content_json"] or "{}"))
+        except (TypeError, json.JSONDecodeError):
+            return False
+        visual = content.get("visual") if isinstance(content, dict) else None
+        movies = visual.get("movies") if isinstance(visual, dict) else None
+        return isinstance(movies, list) and any(
+            isinstance(movie, dict) and movie.get("poster_url") == poster_url
+            for movie in movies
+        )
 
     def record_recommendations(
         self, account_id: str, movies: list[dict[str, Any]], request_summary: str

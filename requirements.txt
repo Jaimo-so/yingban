@@ -1,2 +1,6 @@
-# The runnable skeleton intentionally uses only the Python standard library.
-
+# Framework migration baseline. Exact versions are pinned so the API transport
+# can be reproduced in local development and the deployment image.
+fastapi==0.141.1
+httpx2==2.12.0
+pydantic==2.13.5
+uvicorn[standard]==0.52.4

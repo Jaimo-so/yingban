@@ -1,0 +1,13 @@
+.env
+data/*.db
+data/*.db-shm
+data/*.db-wal
+__pycache__/
+*.py[cod]
+.DS_Store
+tests/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+第*阶段技术开发文档.md
+影伴产品开发总文档.md

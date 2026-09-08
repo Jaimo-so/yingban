@@ -1,15 +1,23 @@
 .env
+.DS_Store
 __pycache__/
 *.py[cod]
 data/*.db
 data/*.db-shm
 data/*.db-wal
+.vefaas/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/next-env.d.ts
+frontend/*.tsbuildinfo
+outputs/
+evals/
 
-# Agent 私有开发文档：仅保留在本机，不进入 GitHub
+# 本机 Agent 内部文档不得发布到 GitHub。
 AGENTS.md
 *阶段技术开发文档.md
 *产品开发总文档.md
 *产品设计PRD*.md
 *MVP阶段核心功能PRD.md
 *项目立项报告.md
-outputs/
