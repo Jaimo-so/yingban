@@ -7,7 +7,7 @@ export default function SharePage() {
   return (
     <>
       <LegacyMarkup html={readLegacyBody("share.html")} />
-      <Script src="/share-card.js?v=13" strategy="afterInteractive" />
+      <Script src="/share-card.js?v=14" strategy="afterInteractive" />
       <Script src="/share.js?v=12" strategy="afterInteractive" />
     </>
   );

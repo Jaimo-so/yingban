@@ -6,19 +6,19 @@ const pages = [
     source: "index.html",
     output: "index.html",
     bodyClass: null,
-    assets: ["/styles.css?v=26", "/app.js?v=33"],
+    assets: ["/styles.css?v=27", "/app.js?v=34"],
   },
   {
     source: "admin.html",
     output: "admin.html",
     bodyClass: "admin-body",
-    assets: ["/styles.css?v=26", "/admin.css?v=19", "/admin.js?v=22"],
+    assets: ["/styles.css?v=27", "/admin.css?v=19", "/admin.js?v=22"],
   },
   {
     source: "share.html",
     output: "share.html",
     bodyClass: "share-page",
-    assets: ["/styles.css?v=26", "/share-card.js?v=13", "/share.js?v=12"],
+    assets: ["/styles.css?v=27", "/share-card.js?v=14", "/share.js?v=12"],
   },
 ];
 
@@ -39,7 +39,7 @@ for (const page of pages) {
   if (page.bodyClass && !output.includes(`<body class="${page.bodyClass}">`)) {
     throw new Error(`${page.output}: body class changed`);
   }
-  for (const asset of [...page.assets, "/brand/logo-screen-dialogue.png?v=1"]) {
+  for (const asset of [...page.assets, "/brand.js?v=1"]) {
     if (!output.includes(asset.replaceAll("&", "&amp;"))) {
       throw new Error(`${page.output}: missing versioned asset ${asset}`);
     }

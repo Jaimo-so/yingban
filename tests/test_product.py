@@ -713,7 +713,7 @@ class StageTenProductTests(ProductFixture):
         self.assertIn("async: true", script)
         self.assertIn("正在生成分享卡…", script)
         self.assertIn("window.location.assign(data.share_path)", script)
-        self.assertIn('/share-card.js?v=13', share_html)
+        self.assertIn('/share-card.js?v=14', share_html)
         self.assertIn('class="share-back-button" href="/"', share_html)
         self.assertIn("返回影伴", share_html)
         self.assertIn("share-film-grid", share_script)
@@ -808,7 +808,7 @@ class StageTenProductTests(ProductFixture):
         self.assertIn('state.skills = Array.isArray(me.skills) ? me.skills : state.skills;', script)
         self.assertIn('error.message === "请求的 Skill 不存在、已停用或不属于当前模块"', script)
         self.assertIn('body: JSON.stringify({ ...payload, skill_key: null })', script)
-        self.assertIn('/app.js?v=33', html)
+        self.assertIn('/app.js?v=34', html)
 
 
 class AgentConfigurationTests(ProductFixture):
@@ -2441,8 +2441,8 @@ class ProductSkillTests(ProductFixture):
         )
         self.assertIn(".weekly-movie > div:not(.poster)", styles)
         self.assertNotIn(".weekly-movie > div {", styles)
-        self.assertIn('/styles.css?v=26', html)
-        self.assertIn('/app.js?v=33', html)
+        self.assertIn('/styles.css?v=27', html)
+        self.assertIn('/app.js?v=34', html)
 
 
 class HTTPFlowTests(ProductFixture):

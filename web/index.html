@@ -10,8 +10,8 @@
         window.location.replace("http://127.0.0.1:8765/");
       }
     </script>
-    <link rel="icon" type="image/png" href="/brand/logo-screen-dialogue.png?v=1">
-    <link rel="stylesheet" href="/styles.css?v=26">
+    <script src="/brand.js?v=1" defer></script>
+    <link rel="stylesheet" href="/styles.css?v=27">
   </head>
   <body>
     <div class="film-grain" aria-hidden="true"></div>
@@ -19,7 +19,7 @@
     <main id="login-view" class="login-layout">
       <section class="login-story" aria-labelledby="login-title">
         <a class="brand brand-large" href="/" aria-label="影伴首页">
-          <span class="brand-mark" aria-hidden="true"></span>
+          <yingban-icon class="brand-mark" aria-hidden="true"></yingban-icon>
           <span>影伴</span>
         </a>
         <div class="login-copy">
@@ -33,7 +33,7 @@
       <section class="login-panel" aria-label="账号登录与注册">
         <div class="login-card">
           <div class="persona-lockup">
-            <span class="avatar avatar-large" aria-hidden="true">映</span>
+            <yingban-icon class="avatar avatar-large" aria-hidden="true"></yingban-icon>
             <div>
               <strong>阿映在等你</strong>
               <span>登录账号，继续你和电影的故事</span>
@@ -74,7 +74,7 @@
     <div id="app-shell" class="app-shell" hidden>
       <header class="topbar">
         <button id="brand-home" class="brand brand-button" type="button" aria-label="返回影伴首页">
-          <span class="brand-mark" aria-hidden="true"></span>
+          <yingban-icon class="brand-mark" aria-hidden="true"></yingban-icon>
           <span>影伴</span>
         </button>
         <nav aria-label="主要导航">
@@ -487,6 +487,6 @@
     </dialog>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/app.js?v=33" defer></script>
+    <script src="/app.js?v=34" defer></script>
   </body>
 </html>

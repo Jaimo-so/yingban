@@ -66,22 +66,19 @@ button { color: inherit; }
   letter-spacing: 0.08em;
 }
 
-/* The approved screen/dialogue logo uses its alpha as a tintable mask. */
-.brand-mark,
-.share-artifact-brand-mark {
+/* Reserve icon space before the shared web component upgrades. */
+yingban-icon {
   display: inline-block;
+  width: var(--yingban-icon-size, 40px);
+  height: var(--yingban-icon-size, 40px);
   flex: 0 0 auto;
-  background-color: currentColor;
-  -webkit-mask: url("/brand/logo-screen-dialogue.png?v=1") center / contain no-repeat;
-  mask: url("/brand/logo-screen-dialogue.png?v=1") center / contain no-repeat;
+  vertical-align: middle;
 }
 
-.brand-mark { width: 40px; height: 40px; color: var(--wine); }
-.login-story .brand-mark,
-.public-share-header .brand-mark { color: inherit; }
+.brand-mark { --yingban-icon-size: 40px; }
 
 .brand-large { font-size: 25px; }
-.brand-large .brand-mark { width: 42px; height: 42px; }
+.brand-large .brand-mark { --yingban-icon-size: 42px; }
 .brand-button { border: 0; background: transparent; cursor: pointer; padding: 0; }
 
 .eyebrow {
@@ -144,18 +141,8 @@ button { color: inherit; }
 .persona-lockup strong { font-family: var(--serif); font-size: 24px; }
 .persona-lockup span:last-child { color: var(--muted); font-size: 14px; }
 
-.avatar {
-  display: grid;
-  flex: 0 0 auto;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  color: #fff8ed;
-  background: var(--wine);
-  font-family: var(--serif);
-}
-.avatar-large { width: 64px; height: 64px; font-size: 24px; }
+.avatar { --yingban-icon-size: 34px; }
+.avatar-large { --yingban-icon-size: 64px; }
 
 label { display: block; margin-bottom: 8px; font-size: 13px; font-weight: 700; }
 input, textarea, select {
@@ -621,7 +608,7 @@ textarea.reflection-note:focus { outline: 2px solid color-mix(in srgb, var(--win
 .share-artifact-footer { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 25px clamp(42px, 7vw, 78px); color: rgba(255,248,237,.58); background: #211b18; font-size: 11px; }
 .share-artifact-footer p { margin: 0; }
 .share-artifact-brand { display: flex; align-items: center; gap: 9px; color: #fff8ed; font-family: var(--serif); letter-spacing: .08em; }
-.share-artifact-brand-mark { width: 32px; height: 32px; }
+.share-artifact-brand-mark { --yingban-icon-size: 32px; }
 .share-artifact-classic { max-width: 760px; margin: 8vh auto; padding: clamp(36px, 8vw, 76px); }
 .share-artifact-classic .share-artifact-kicker { color: var(--wine); }
 .share-artifact-classic h1 { margin: 12px 0 28px; font: 500 clamp(38px, 7vw, 62px)/1.12 var(--serif); }
@@ -659,7 +646,7 @@ textarea.reflection-note:focus { outline: 2px solid color-mix(in srgb, var(--win
   .login-panel { min-height: 46vh; }
   .topbar { min-height: 64px; padding: 0 16px; }
   .brand { font-size: 0; gap: 0; }
-  .brand-mark { width: 36px; height: 36px; }
+  .brand-mark { --yingban-icon-size: 36px; }
   .topbar nav { gap: 0; }
   .nav-link { padding: 9px 10px; font-size: 12px; }
   .demo-badge { display: none; }

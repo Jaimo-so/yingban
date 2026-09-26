@@ -770,9 +770,9 @@ function renderMessage(role, text, loading = false, options = {}) {
   const message = document.createElement("div");
   message.className = `message ${role}`;
   if (role === "assistant") {
-    const avatar = document.createElement("span");
+    const avatar = document.createElement("yingban-icon");
     avatar.className = "avatar";
-    avatar.textContent = "映";
+    avatar.setAttribute("aria-hidden", "true");
     message.append(avatar);
   }
   const bubble = document.createElement("div");

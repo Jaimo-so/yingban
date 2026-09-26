@@ -105,7 +105,7 @@
 
     const footer = el("footer", "share-artifact-footer");
     const brand = el("div", "share-artifact-brand");
-    const mark = el("span", "share-artifact-brand-mark");
+    const mark = el("yingban-icon", "share-artifact-brand-mark");
     mark.setAttribute("aria-hidden", "true");
     brand.append(mark);
     appendText(brand, "strong", "", "影伴");

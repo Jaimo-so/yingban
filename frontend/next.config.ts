@@ -7,7 +7,8 @@ const legacyAssets = [
   "admin.js",
   "share.js",
   "share-card.js",
-  "brand/logo-screen-dialogue.png",
+  "brand.js",
+  "brand/yingban-seal.png",
 ];
 
 const developmentProxy: Partial<NextConfig> =

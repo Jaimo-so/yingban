@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
+import { BrandAssets } from "@/components/brand-assets";
+
 export const metadata: Metadata = {
   title: "影伴 · 一张电影分享",
   robots: "noindex,nofollow,noarchive",
@@ -11,8 +13,8 @@ export default function ShareLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="zh-CN">
       <head>
-        <link rel="icon" type="image/png" href="/brand/logo-screen-dialogue.png?v=1" />
-        <link rel="stylesheet" href="/styles.css?v=26" />
+        <BrandAssets />
+        <link rel="stylesheet" href="/styles.css?v=27" />
       </head>
       <body className="share-page">{children}</body>
     </html>
