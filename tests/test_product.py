@@ -213,6 +213,26 @@ class DeploymentConfigurationTests(unittest.TestCase):
             self.assertEqual(runtime.headers["cache-control"], "public, max-age=300")
 
 
+    def test_ui_content_reads_edits_without_service_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            web = root / "web"
+            web.mkdir()
+            content = web / "ui-content.json"
+            content.write_text('{"home":{"title":"原标题"}}', encoding="utf-8")
+            context = SimpleNamespace(settings=SimpleNamespace(base_dir=root, web_dir=web))
+            with TestClient(create_fastapi_app(context)) as client:  # type: ignore[arg-type]
+                before = client.get("/ui-content.json")
+                content.write_text('{"home":{"title":"新标题"}}', encoding="utf-8")
+                after = client.get("/ui-content.json")
+            self.assertEqual(before.status_code, 200)
+            self.assertEqual(after.status_code, 200)
+            self.assertEqual(before.json()["home"]["title"], "原标题")
+            self.assertEqual(after.json()["home"]["title"], "新标题")
+            self.assertEqual(after.headers["cache-control"], "no-store")
+            self.assertIn("application/json", after.headers["content-type"])
+
+
 class InviteAndMemoryTests(ProductFixture):
     def test_password_registration_login_and_unique_username(self) -> None:
         account, token = self.store.register_with_password("Movie_Fan", "long-password-123", 30)
@@ -765,18 +785,24 @@ class StageTenProductTests(ProductFixture):
         self.assertIn("listForMovie(movieId)", script)
         self.assertIn("function openConversationHistory(movie = null)", script)
         self.assertIn("renderConversationHistory(movie)", script)
-        self.assertIn('miniButton(`聊天记录 ${conversations.length}`', script)
+        self.assertIn('conversations: () => openConversationHistory(movie)', script)
+        self.assertIn('conversationCount: conversations.length', script)
+        content = json.loads((PRODUCT_DIR / "web" / "ui-content.json").read_text(encoding="utf-8"))
+        self.assertIn({"id": "conversations", "label": "聊天记录 {count}"}, content["cards"]["history"]["conversationActions"])
         self.assertIn('openChat("discussion", conversation.movie || null, { conversation })', script)
 
     def test_stage_nineteen_movie_library_continues_latest_chat_without_creating_a_new_one(self) -> None:
         script = (PRODUCT_DIR / "web" / "app.js").read_text(encoding="utf-8")
         self.assertIn("const primaryConversation = choosePrimaryConversation(conversations);", script)
-        self.assertIn('miniButton("继续聊天"', script)
+        self.assertIn("continue: () => openPrimaryMovieConversation(movie)", script)
         self.assertIn(
             'openChat("discussion", primaryConversation.movie || movie, { conversation: primaryConversation })',
             script,
         )
-        self.assertIn('miniButton("另开新对话"', script)
+        self.assertIn('discuss: () => openChat("discussion", movie)', script)
+        content = json.loads((PRODUCT_DIR / "web" / "ui-content.json").read_text(encoding="utf-8"))
+        self.assertIn({"id": "continue", "label": "继续聊天"}, content["cards"]["history"]["conversationActions"])
+        self.assertIn({"id": "discuss", "label": "另开新对话"}, content["cards"]["history"]["conversationActions"])
 
     def test_stage_twenty_primary_movie_chat_prefers_the_most_complete_history(self) -> None:
         script = (PRODUCT_DIR / "web" / "app.js").read_text(encoding="utf-8")
@@ -808,7 +834,7 @@ class StageTenProductTests(ProductFixture):
         self.assertIn('state.skills = Array.isArray(me.skills) ? me.skills : state.skills;', script)
         self.assertIn('error.message === "请求的 Skill 不存在、已停用或不属于当前模块"', script)
         self.assertIn('body: JSON.stringify({ ...payload, skill_key: null })', script)
-        self.assertIn('/app.js?v=34', html)
+        self.assertIn('/app.js?v=36', html)
 
 
 class AgentConfigurationTests(ProductFixture):
@@ -1447,10 +1473,14 @@ class IntegrationConfigurationTests(ProductFixture):
             'id="movie-search-results" class="search-results" aria-live="polite"',
             html,
         )
-        self.assertGreaterEqual(script.count('loading.textContent = "正在搜索电影…";'), 1)
-        self.assertIn('submit.textContent = "搜索中…";', script)
-        self.assertIn('data.search_status === "unavailable"', script)
-        self.assertIn("电影搜索服务暂时不可用，请稍后重试。", script)
+        components = (PRODUCT_DIR / "web" / "movie-components.js").read_text(encoding="utf-8")
+        self.assertIn('emptyState(uiText("search.loading"))', script)
+        self.assertIn('submit.textContent = uiText("search.submitting");', script)
+        self.assertEqual(script.count('searchEmptyState(data.search_status)'), 2)
+        self.assertIn('status === "unavailable"', components)
+        content = json.loads((PRODUCT_DIR / "web" / "ui-content.json").read_text(encoding="utf-8"))
+        self.assertEqual(content["search"]["unavailable"], "电影搜索服务暂时不可用，请稍后重试。")
+        self.assertLess(html.index('/movie-components.js?v=2'), html.index('/app.js?v=36'))
 
     def test_tmdb_result_is_persisted_with_a_real_poster_url(self) -> None:
         internet = InternetRuntime(self.settings, self.store)
@@ -1998,9 +2028,13 @@ class IntegrationConfigurationTests(ProductFixture):
             "function renderOnboardingSelected()", 1
         )[0]
 
-        self.assertIn('button.className = "onboarding-movie-select"', candidate)
-        self.assertIn("button.append(posterNode(movie), label)", candidate)
-        self.assertIn('button.setAttribute("aria-label", `选择《${movie.title_zh}》`)', candidate)
+        components = (PRODUCT_DIR / "web" / "movie-components.js").read_text(encoding="utf-8")
+        self.assertIn('className: "onboarding-movie-select"', components)
+        self.assertIn("const card = onboardingCard(movie,", candidate)
+        self.assertIn('content: element("span", "onboarding-movie-select-label", config.select)', components)
+        self.assertIn('format(config.selectAria, {title: movie.title_zh})', components)
+        self.assertIn("button.append(image)", components)
+        self.assertIn("if (content) button.append(content)", components)
         self.assertIn(".onboarding-movie-select { display: block; width: 100%", styles)
         self.assertNotIn("card.append(posterNode(movie))", candidate)
 
@@ -2046,7 +2080,7 @@ class IntegrationConfigurationTests(ProductFixture):
         styles = (PRODUCT_DIR / "web" / "styles.css").read_text(encoding="utf-8")
         admin = (PRODUCT_DIR / "web" / "admin.html").read_text(encoding="utf-8")
         self.assertIn('id="reflection-dialog"', html)
-        self.assertIn("history-poster-button", script)
+        self.assertIn("history-poster-button", (PRODUCT_DIR / "web" / "movie-components.js").read_text(encoding="utf-8"))
         self.assertIn("name.after(wrap)", script)
         self.assertIn("background: var(--wine)", styles)
         self.assertIn('id="opening-config-form"', admin)
@@ -2442,7 +2476,7 @@ class ProductSkillTests(ProductFixture):
         self.assertIn(".weekly-movie > div:not(.poster)", styles)
         self.assertNotIn(".weekly-movie > div {", styles)
         self.assertIn('/styles.css?v=27', html)
-        self.assertIn('/app.js?v=34', html)
+        self.assertIn('/app.js?v=36', html)
 
 
 class HTTPFlowTests(ProductFixture):

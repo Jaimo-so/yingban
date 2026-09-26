@@ -2332,7 +2332,8 @@ class YingbanHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", f"{content_type}; charset=utf-8" if content_type.startswith("text/") else content_type)
         self.send_header("Content-Length", str(len(content)))
-        self.send_header("Cache-Control", "no-store" if candidate.suffix == ".html" else "public, max-age=300")
+        editable_content = candidate == web_root / "ui-content.json"
+        self.send_header("Cache-Control", "no-store" if candidate.suffix == ".html" or editable_content else "public, max-age=300")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "same-origin")
         self.end_headers()

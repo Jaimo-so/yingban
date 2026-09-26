@@ -1,0 +1,102 @@
+{
+  "home": {
+    "eyebrow": "今晚，想怎么和电影相处？",
+    "title": "我在。你从哪儿说起都行。",
+    "description": "不用组织成一篇影评，也不用先弄明白自己的心情。",
+    "discussion": {
+      "kicker": "刚刚散场",
+      "title": "聊聊我看完的电影",
+      "description": "说说哪个人、哪个选择，或者哪种感觉一直没散。"
+    },
+    "recommendation": {
+      "kicker": "下一部电影",
+      "title": "帮我找一部电影",
+      "description": "按口味、心情，或者最近放不下的一件事来找。"
+    },
+    "boxOffice": {
+      "eyebrow": "NOW PLAYING · DAILY BOX OFFICE",
+      "title": "这周，可以从这里开始",
+      "sourceLabel": "查看数据来源 ↗",
+      "current": "{date} 中国内地当日票房排名 · 每日自动更新",
+      "stale": "{date} 中国内地当日票房排名 · 显示最近一次可用榜单",
+      "unavailable": "今日票房榜暂时没有取得，稍后回到首页会自动重试。"
+    }
+  },
+  "poster": {
+    "showYear": true,
+    "showRegions": true,
+    "alt": "《{title}》电影海报"
+  },
+  "search": {
+    "submit": "搜索",
+    "submitting": "搜索中…",
+    "loading": "正在搜索电影…",
+    "loadingCandidates": "正在加载候选电影…",
+    "empty": "没有找到这部电影，试试完整片名、原名或别名。",
+    "unavailable": "电影搜索服务暂时不可用，请稍后重试。",
+    "failed": "电影搜索失败，请稍后重试。"
+  },
+  "cards": {
+    "onboarding": {
+      "select": "选这部",
+      "selectAria": "选择《{title}》"
+    },
+    "home": {
+      "fields": ["rank", "title", "amount", "meta"],
+      "rank": "票房第 {rank} 名",
+      "amount": "当日 {amount}",
+      "meta": "{sessions} 场 · {audience} 人次",
+      "actions": [
+        {"id": "watchlist", "label": "留在想看"},
+        {"id": "discuss", "label": "聊聊这部"}
+      ]
+    },
+    "recommendation": {
+      "fields": ["genres", "reason", "notes"],
+      "notes": "留意：{notes}",
+      "feedbackRecorded": "已记录。它只影响电影推荐，不会被用来推断你的现实生活。",
+      "actions": [
+        {"id": "watchlist", "label": "想看"},
+        {"id": "watched", "label": "看过了，换一部"},
+        {"id": "discuss", "label": "聊聊这部"},
+        {"id": "reasons", "label": "不适合现在"}
+      ],
+      "feedbackReasons": [
+        {"id": "not_now", "label": "暂时不想看"},
+        {"id": "wrong_tone", "label": "氛围不对"},
+        {"id": "wrong_genre", "label": "类型不对"},
+        {"id": "too_heavy", "label": "太沉重"},
+        {"id": "not_interested", "label": "以后也别推荐"}
+      ]
+    },
+    "history": {
+      "fields": ["title", "meta"],
+      "meta": "{originalTitle} · {genres}",
+      "noteBadge": "有笔记",
+      "posterAria": "查看《{title}》的观后感笔记",
+      "watchlistActions": [
+        {"id": "keep", "label": "还想看"},
+        {"id": "watched", "label": "已经看了"},
+        {"id": "not_now", "label": "暂时不看"},
+        {"id": "not_interested", "label": "不再感兴趣"},
+        {"id": "remove", "label": "移除"}
+      ],
+      "watchedActions": [
+        {"id": "discuss", "label": "聊聊"},
+        {"id": "remove", "label": "移除"}
+      ],
+      "conversationActions": [
+        {"id": "continue", "label": "继续聊天"},
+        {"id": "conversations", "label": "聊天记录 {count}"},
+        {"id": "discuss", "label": "另开新对话"},
+        {"id": "remove", "label": "移除"}
+      ]
+    },
+    "search": {
+      "fields": ["title", "meta"],
+      "meta": "{year} · {originalTitle}",
+      "watchedLabel": "标记看过",
+      "otherLabel": "加入"
+    }
+  }
+}

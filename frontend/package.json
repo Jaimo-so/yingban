@@ -7,7 +7,10 @@
     "build": "next build",
     "verify:parity": "node scripts/verify-export.mjs",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "check:content": "node scripts/check-ui-content.cjs",
+    "test:ui": "node --test tests/ui-content.test.cjs",
+    "prebuild": "npm run check:content"
   },
   "dependencies": {
     "next": "16.3.4",

@@ -1,3 +1,6 @@
+const { poster: posterNode, actionButton, emptyState, searchEmptyState, onboardingCard, recommendationCard, boxOfficeCard, historyCard, searchCard } = window.YingbanMovieUI;
+const { get: uiText, format: formatText } = window.YingbanContent;
+
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
@@ -258,6 +261,18 @@ function showLogin() {
 }
 
 async function boot() {
+  $("#login-view").inert = true;
+  try {
+    await window.YingbanContent.load();
+    window.YingbanContent.applyPage();
+    $("#login-view").inert = false;
+  } catch (error) {
+    $("#login-view").hidden = true;
+    $("#ui-config-error").hidden = false;
+    $("#ui-config-error-message").textContent = error.message;
+    $("#ui-config-retry").addEventListener("click", () => window.location.reload());
+    return;
+  }
   try {
     const me = await api("/api/me");
     me.authenticated ? showAuthenticated(me) : showLogin();
@@ -312,28 +327,19 @@ async function loadOnboardingCandidates(query = "") {
   const wrap = $("#onboarding-candidates");
   const submit = $("#onboarding-search-form button[type='submit']");
   const originalLabel = submit.textContent;
-  const loading = document.createElement("p");
-  loading.className = "empty-state";
-  loading.textContent = query ? "正在搜索电影…" : "正在加载候选电影…";
-  wrap.replaceChildren(loading);
+  wrap.replaceChildren(emptyState(query ? uiText("search.loading") : uiText("search.loadingCandidates")));
   wrap.setAttribute("aria-busy", "true");
   submit.disabled = true;
-  if (query) submit.textContent = "搜索中…";
+  if (query) submit.textContent = uiText("search.submitting");
   try {
     const data = await api(`/api/onboarding/candidates${query ? `?query=${encodeURIComponent(query)}` : ""}`);
     wrap.replaceChildren(...data.items.map(onboardingCandidate));
     if (!data.items.length) {
-      const empty = document.createElement("p");
-      empty.className = "empty-state";
-      empty.textContent = data.search_status === "unavailable"
-        ? "电影搜索服务暂时不可用，请稍后重试。"
-        : "没有找到这部电影，试试完整片名、原名或别名。";
+      const empty = searchEmptyState(data.search_status);
       wrap.append(empty);
     }
   } catch (error) {
-    const failed = document.createElement("p");
-    failed.className = "empty-state";
-    failed.textContent = error.message || "电影搜索失败，请稍后重试。";
+    const failed = emptyState(error.message || uiText("search.failed"));
     wrap.replaceChildren(failed);
     showToast(failed.textContent);
   } finally {
@@ -344,32 +350,18 @@ async function loadOnboardingCandidates(query = "") {
 }
 
 function onboardingCandidate(movie) {
-  const card = document.createElement("article");
-  card.className = "onboarding-movie";
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "onboarding-movie-select";
-  button.setAttribute("aria-label", `选择《${movie.title_zh}》`);
-  const label = document.createElement("span");
-  label.className = "onboarding-movie-select-label";
-  label.textContent = "选这部";
-  button.append(posterNode(movie), label);
-  button.disabled = state.onboardingSelected.length >= 5;
-  button.addEventListener("click", async () => {
-    button.disabled = true;
-    try {
+  const card = onboardingCard(movie, {
+    disabled: state.onboardingSelected.length >= 5,
+    onError: (error) => showToast(error.message),
+    onSelect: async () => {
       await api("/api/onboarding/movies", {
         method: "POST",
         body: JSON.stringify({ movie_id: movie.id, sentiment: "neutral" }),
       });
       await loadOnboarding();
       card.remove();
-    } catch (error) {
-      showToast(error.message);
-      button.disabled = false;
-    }
+    },
   });
-  card.append(button);
   return card;
 }
 
@@ -801,94 +793,25 @@ function renderMessage(role, text, loading = false, options = {}) {
   return message;
 }
 
-function posterNode(movie) {
-  const poster = document.createElement("div");
-  poster.className = "poster";
-  const year = document.createElement("span");
-  year.className = "poster-year";
-  year.textContent = `${movie.year || "—"}${movie.regions?.length ? ` · ${movie.regions.join(" / ")}` : ""}`;
-  const title = document.createElement("strong");
-  title.className = "poster-title";
-  title.textContent = movie.title_zh;
-  if (movie.poster_url) {
-    const image = document.createElement("img");
-    image.className = "poster-image";
-    image.src = movie.poster_url;
-    image.alt = `《${movie.title_zh}》电影海报`;
-    image.loading = "lazy";
-    image.decoding = "async";
-    image.referrerPolicy = "no-referrer";
-    poster.classList.add("is-loading");
-    image.addEventListener("load", () => {
-      poster.classList.remove("is-loading");
-      poster.classList.add("has-image");
-    }, { once: true });
-    image.addEventListener("error", () => {
-      image.remove();
-      poster.classList.remove("has-image", "is-loading");
-      poster.classList.add("image-failed");
-    }, { once: true });
-    poster.append(image);
-  }
-  poster.append(year, title);
-  return poster;
-}
-
 function renderRecommendations(movies) {
   if (!movies?.length) return;
   const row = document.createElement("div");
   row.className = "recommendation-row";
-  movies.forEach((movie) => {
-    const card = document.createElement("article");
-    card.className = "movie-card";
-
-    const poster = posterNode(movie);
-
-    const body = document.createElement("div");
-    body.className = "movie-card-body";
-    const meta = document.createElement("span");
-    meta.className = "movie-meta";
-    meta.textContent = (movie.genres || []).join(" · ");
-    const reason = document.createElement("p");
-    reason.className = "movie-reason";
-    reason.textContent = movie.match_reason || movie.summary;
-    const notes = document.createElement("p");
-    notes.className = "content-note";
-    notes.textContent = movie.content_notes?.length ? `留意：${movie.content_notes.slice(0, 2).join("、")}` : "";
-    const actions = document.createElement("div");
-    actions.className = "movie-actions";
-    actions.append(
-      miniButton("想看", () => sendRecommendationFeedback(movie, "watchlist")),
-      miniButton("看过了，换一部", async () => {
+  row.append(...movies.map(movie => recommendationCard(movie, {
+    onError: (error) => showToast(error.message),
+    onFeedback: (action) => sendRecommendationFeedback(movie, action),
+    actions: {
+      watchlist: () => sendRecommendationFeedback(movie, "watchlist"),
+      watched: async () => {
         await sendRecommendationFeedback(movie, "watched");
         await sendMessage(`《${movie.title_zh}》我看过了，换一个方向相近但没看过的。`);
-      }),
-      miniButton("聊聊这部", async () => {
+      },
+      discuss: async () => {
         await sendRecommendationFeedback(movie, "discuss");
-        openChat("discussion", movie);
-      }),
-      miniButton("不适合现在", () => { reasons.hidden = !reasons.hidden; })
-    );
-    const reasons = document.createElement("div");
-    reasons.className = "feedback-reasons";
-    reasons.hidden = true;
-    for (const [action, label] of [
-      ["not_now", "暂时不想看"], ["wrong_tone", "氛围不对"],
-      ["wrong_genre", "类型不对"], ["too_heavy", "太沉重"],
-      ["not_interested", "以后也别推荐"],
-    ]) {
-      reasons.append(miniButton(label, async () => {
-        await sendRecommendationFeedback(movie, action);
-        reasons.replaceChildren(Object.assign(document.createElement("span"), {
-          className: "feedback-note",
-          textContent: "已记录。它只影响电影推荐，不会被用来推断你的现实生活。",
-        }));
-      }));
-    }
-    body.append(meta, reason, notes, actions, reasons);
-    card.append(poster, body);
-    row.append(card);
-  });
+        await openChat("discussion", movie);
+      },
+    },
+  })));
   $("#chat-messages").append(row);
   scrollChatToLatest();
 }
@@ -910,16 +833,7 @@ async function sendRecommendationFeedback(movie, action) {
 }
 
 function miniButton(label, action) {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "mini-button";
-  button.textContent = label;
-  button.addEventListener("click", async () => {
-    button.disabled = true;
-    try { await action(); } catch (error) { showToast(error.message); }
-    finally { button.disabled = false; }
-  });
-  return button;
+  return actionButton(label, action, { onError: (error) => showToast(error.message) });
 }
 
 function renderSkillArtifactActions(messageNode, data) {
@@ -1227,54 +1141,28 @@ async function loadDailyBoxOffice() {
   try {
     const data = await api("/api/box-office");
     if (data.status === "unavailable" || !(data.movies || []).length) {
-      $("#weekly-reason").textContent = "今日票房榜暂时没有取得，稍后回到首页会自动重试。";
+      $("#weekly-reason").textContent = uiText("home.boxOffice.unavailable");
       $("#weekly-movies").replaceChildren();
       return;
     }
     renderDailyBoxOffice(data);
   } catch {
-    $("#weekly-reason").textContent = "今日票房榜暂时没有取得，稍后回到首页会自动重试。";
+    $("#weekly-reason").textContent = uiText("home.boxOffice.unavailable");
     $("#weekly-movies").replaceChildren();
   }
 }
 
-function formatBoxOfficeAmount(value) {
-  const amount = Number(value || 0);
-  if (amount >= 10000) return `${(amount / 10000).toFixed(2).replace(/\.00$/, "")} 亿`;
-  return `${amount.toLocaleString("zh-CN", { maximumFractionDigits: 2 })} 万`;
-}
-
 function renderDailyBoxOffice(data) {
-  const businessDate = data.business_date || "今日";
-  $("#weekly-reason").textContent = data.stale
-    ? `${businessDate} 中国内地当日票房排名 · 显示最近一次可用榜单`
-    : `${businessDate} 中国内地当日票房排名 · 每日自动更新`;
-  $("#weekly-movies").replaceChildren(...(data.movies || []).map((movie) => {
-    const item = document.createElement("article");
-    item.className = "weekly-movie";
-    item.append(posterNode(movie));
-    const body = document.createElement("div");
-    const rank = document.createElement("span");
-    rank.className = "box-office-rank";
-    rank.textContent = `票房第 ${movie.box_office?.rank || "—"} 名`;
-    const title = document.createElement("h3");
-    title.textContent = movie.title_zh;
-    const amount = document.createElement("p");
-    amount.className = "box-office-amount";
-    amount.textContent = `当日 ${formatBoxOfficeAmount(movie.box_office?.day_box_office_wan)}`;
-    const meta = document.createElement("p");
-    meta.className = "box-office-meta";
-    meta.textContent = `${Number(movie.box_office?.sessions || 0).toLocaleString("zh-CN")} 场 · ${Number(movie.box_office?.audience || 0).toLocaleString("zh-CN")} 人次`;
-    const actions = document.createElement("div");
-    actions.className = "history-item-actions";
-    actions.append(
-      miniButton("留在想看", () => markMovie(movie, "watchlist", "daily_box_office")),
-      miniButton("聊聊这部", () => openChat("discussion", movie)),
-    );
-    body.append(rank, title, amount, meta, actions);
-    item.append(body);
-    return item;
-  }));
+  $("#weekly-reason").textContent = formatText(uiText(data.stale ? "home.boxOffice.stale" : "home.boxOffice.current"), {
+    date: data.business_date || "今日",
+  });
+  $("#weekly-movies").replaceChildren(...(data.movies || []).map(movie => boxOfficeCard(movie, {
+    onError: (error) => showToast(error.message),
+    actions: {
+      watchlist: () => markMovie(movie, "watchlist", "daily_box_office"),
+      discuss: () => openChat("discussion", movie),
+    },
+  })));
 }
 
 async function openConversationSummary() {
@@ -1475,68 +1363,31 @@ async function loadHistory(append = false) {
 }
 
 function historyItem(movie) {
-  const card = document.createElement("article");
-  card.className = "history-item";
-  const poster = posterNode(movie);
-  let posterView = poster;
-  if (state.historyState === "watched") {
-    const posterButton = document.createElement("button");
-    posterButton.type = "button";
-    posterButton.className = "history-poster-button";
-    posterButton.setAttribute("aria-label", `查看《${movie.title_zh}》的观后感笔记`);
-    posterButton.append(poster);
-    if (movie.note) {
-      const noteBadge = document.createElement("span");
-      noteBadge.className = "reflection-badge";
-      noteBadge.textContent = "有笔记";
-      posterButton.append(noteBadge);
-    }
-    posterButton.addEventListener("click", () => openReflection(movie, posterButton));
-    posterView = posterButton;
-  }
-  const body = document.createElement("div");
-  body.className = "history-item-body";
-  const heading = document.createElement("h3");
-  heading.textContent = movie.title_zh;
-  const meta = document.createElement("p");
-  meta.textContent = `${movie.title_original} · ${(movie.genres || []).join(" / ")}`;
-  const actions = document.createElement("div");
-  actions.className = "history-item-actions";
   const movieId = movie.id || movie.movie_id;
-  const conversations = state.historyState === "watched"
-    ? localConversationStore.listForMovie(movieId)
-    : [];
-  if (state.historyState === "watchlist") {
-    actions.append(
-      miniButton("还想看", () => followUpWatchlist(movie, "keep")),
-      miniButton("已经看了", async () => {
+  const conversations = state.historyState === "watched" ? localConversationStore.listForMovie(movieId) : [];
+  return historyCard(movie, {
+    historyState: state.historyState,
+    conversationCount: conversations.length,
+    onOpenReflection: (button) => openReflection(movie, button),
+    onError: (error) => showToast(error.message),
+    actions: {
+      keep: () => followUpWatchlist(movie, "keep"),
+      watched: async () => {
         await followUpWatchlist(movie, "watched");
         await openChat("discussion", movie);
-      }),
-      miniButton("暂时不看", () => followUpWatchlist(movie, "not_now")),
-      miniButton("不再感兴趣", () => followUpWatchlist(movie, "not_interested")),
-    );
-  } else {
-    if (conversations.length) {
-      actions.append(
-        miniButton("继续聊天", () => openPrimaryMovieConversation(movie)),
-        miniButton(`聊天记录 ${conversations.length}`, () => openConversationHistory(movie)),
-        miniButton("另开新对话", () => openChat("discussion", movie)),
-      );
-    } else {
-      actions.append(miniButton("聊聊", () => openChat("discussion", movie)));
-    }
-  }
-  actions.append(
-    miniButton("移除", async () => {
-      await api(`/api/history/${encodeURIComponent(movie.movie_id)}`, { method: "DELETE" });
-      showToast(`已从片单移除《${movie.title_zh}》`);
-      await Promise.all([loadHistory(), refreshMe()]);
-    })
-  );
-  body.append(heading, meta, actions);
-  card.append(posterView, body);
-  return card;
+      },
+      not_now: () => followUpWatchlist(movie, "not_now"),
+      not_interested: () => followUpWatchlist(movie, "not_interested"),
+      continue: () => openPrimaryMovieConversation(movie),
+      conversations: () => openConversationHistory(movie),
+      discuss: () => openChat("discussion", movie),
+      remove: async () => {
+        await api(`/api/history/${encodeURIComponent(movie.movie_id)}`, { method: "DELETE" });
+        showToast(`已从片单移除《${movie.title_zh}》`);
+        await Promise.all([loadHistory(), refreshMe()]);
+      },
+    },
+  });
 }
 
 async function followUpWatchlist(movie, action) {
@@ -2233,55 +2084,34 @@ $("#movie-search-form").addEventListener("submit", async (event) => {
   const wrap = $("#movie-search-results");
   const submit = event.currentTarget.querySelector("button[type='submit']");
   if (submit.disabled) return;
-  const loading = document.createElement("p");
-  loading.className = "empty-state";
-  loading.textContent = "正在搜索电影…";
-  wrap.replaceChildren(loading);
+  wrap.replaceChildren(emptyState(uiText("search.loading")));
   wrap.setAttribute("aria-busy", "true");
   submit.disabled = true;
-  submit.textContent = "搜索中…";
+  submit.textContent = uiText("search.submitting");
   try {
     const data = await api(`/api/movies?query=${encodeURIComponent(query)}`);
     if (!data.items.length) {
-      const empty = document.createElement("p");
-      empty.className = "empty-state";
-      empty.textContent = data.search_status === "unavailable"
-        ? "电影搜索服务暂时不可用，请稍后重试。"
-        : "没有找到这部电影，试试完整片名、原名或别名。";
+      const empty = searchEmptyState(data.search_status);
       wrap.replaceChildren(empty);
       return;
     }
-    wrap.replaceChildren(...data.items.map((movie) => {
-      const row = document.createElement("div");
-      row.className = "search-item";
-      const copy = document.createElement("div");
-      const title = document.createElement("strong");
-      title.textContent = movie.title_zh;
-      const meta = document.createElement("span");
-      meta.textContent = `${movie.year} · ${movie.title_original}`;
-      copy.append(title, meta);
-      const add = document.createElement("button");
-      add.className = "mini-button";
-      add.type = "button";
-      add.textContent = state.historyState === "watched" ? "标记看过" : "加入";
-      add.addEventListener("click", async () => {
+    wrap.replaceChildren(...data.items.map(movie => searchCard(movie, {
+      historyState: state.historyState,
+      onError: (error) => showToast(error.message),
+      onAdd: async () => {
         await markMovie(movie, state.historyState, "manual");
         $("#movie-dialog").close();
-        loadHistory();
-      });
-      row.append(copy, add);
-      return row;
-    }));
+        await loadHistory();
+      },
+    })));
   } catch (error) {
-    const failed = document.createElement("p");
-    failed.className = "empty-state";
-    failed.textContent = error.message || "电影搜索失败，请稍后重试。";
+    const failed = emptyState(error.message || uiText("search.failed"));
     wrap.replaceChildren(failed);
     showToast(failed.textContent);
   } finally {
     wrap.removeAttribute("aria-busy");
     submit.disabled = false;
-    submit.textContent = "搜索";
+    submit.textContent = uiText("search.submit");
   }
 });
 

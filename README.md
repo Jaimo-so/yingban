@@ -83,6 +83,51 @@ uv run --isolated --python 3.12 \
   python app.py generate-invites 1
 ```
 
+## 修改界面内容，不改业务代码
+
+直接编辑 [`web/ui-content.json`](web/ui-content.json)，保存后刷新本地页面即可生效。页面每次启动都会重新读取这份 JSON；只改它不需要修改组件、重新构建 Next.js 或重启本地 Python 服务。线上需要把更新后的文件按现有发布流程部署，修改本地文件不会自动更新线上。
+
+| 想修改什么 | JSON 中的位置 | 编辑方式 |
+| --- | --- | --- |
+| 首页主标题、说明 | `home.title`、`home.description`、`home.eyebrow` | 改引号内文字 |
+| 首页两个入口 | `home.discussion`、`home.recommendation` | 改 `kicker`、`title`、`description` |
+| 票房区标题和提示 | `home.boxOffice` | 改文案；`{date}` 会自动填实际日期 |
+| 是否展示海报年份、地区 | `poster.showYear`、`poster.showRegions` | 使用 `true` / `false`，不加引号 |
+| 海报替代文字 | `poster.alt` | 保留 `{title}` 自动填入实际电影名 |
+| 票房卡显示哪些字段、先后顺序 | `cards.home.fields` | 调整 `rank`、`title`、`amount`、`meta` 的顺序；删除某项即可隐藏该项 |
+| 推荐卡显示内容 | `cards.recommendation.fields` | 调整或删除 `genres`、`reason`、`notes` |
+| 我的电影、搜索行显示内容 | `cards.history.fields`、`cards.search.fields` | 调整或删除 `title`、`meta` |
+| 卡片按钮名称、排列和显示 | 相应 `actions` / `watchlistActions` / `watchedActions` / `conversationActions` | 改 `label`、调换完整对象的顺序；删除对象即可隐藏按钮，`id` 保持原值 |
+| 推荐反馈选项 | `cards.recommendation.feedbackReasons` | 改 `label` 或排序，`id` 保持原值 |
+| 选片按钮、笔记徽标 | `cards.onboarding`、`cards.history.noteBadge` | 改文案；无障碍标签中的 `{title}` 自动替换 |
+| 搜索按钮与状态提示 | `search`、`cards.search.watchedLabel`、`cards.search.otherLabel` | 改文字；影响冷启动搜索和片单搜索的对应提示 |
+
+例如，将 `cards.home.actions` 改为下面的内容，会把讨论按钮放前面，并更改按钮名称；它们的点击功能保持原样：
+
+```json
+[
+  {"id": "discuss", "label": "和阿映聊聊"},
+  {"id": "watchlist", "label": "收藏到想看"}
+]
+```
+
+把 `cards.home.fields` 改成 `["title", "rank"]`，票房卡就只显示片名和排名，按钮与海报保留。上述例子都是对应字段的值，不能用它们替换整个 JSON 文件。
+
+占位符含义：`{title}` 片名，`{date}` 榜单日期，`{rank}` 排名，`{amount}` 已格式化票房，`{sessions}` 场次，`{audience}` 人次，`{notes}` 内容提示，`{originalTitle}` 原片名，`{genres}` 类型，`{year}` 年份，`{count}` 聊天记录数。每个位置只支持文件中原有的对应占位符。所有文案按纯文字显示，不执行 HTML。
+
+编辑后可先执行 `npm --prefix frontend run check:content`。构建时也会自动检查 JSON、字段、按钮 ID 和占位符。配置错误时页面显示具体位置；修正后点击“修正配置后重新加载”即可恢复。
+
+数据与结构分别位于：
+
+- `web/ui-content.json`：上述可编辑文案、显示字段和按钮配置。
+- `web/movie-components.js`：五类卡片的 DOM 结构、图片降级和原生按钮交互。
+- `web/app.js`：获取真实数据、当前用户状态和 API／跳转动作。
+- `web/styles.css`：颜色、字号、间距和响应式布局。
+
+真实电影标题、海报、票房、“看过／想看”状态仍来自业务 API 和数据库；该 JSON 不覆盖用户记录。修改按钮的 `label` 只改显示名称，不会改变其 `id` 对应的业务动作。新增业务功能、全新卡片结构或调整颜色字号仍需修改对应的业务／组件／样式文件；管理后台、聊天正文、模型开场白和公共分享页未接入这份用户端卡片配置。
+
+这份 JSON 会公开提供给浏览器，只放界面内容，不放 API 密钥或私人数据。
+
 ## 验证
 
 ```bash
@@ -92,6 +137,7 @@ uv run --isolated --python 3.12 \
   python -m unittest discover -s tests -p 'test_*.py'
 
 npm --prefix frontend run build
+npm --prefix frontend run test:ui
 npm --prefix frontend run typecheck
 npm --prefix frontend run lint
 npm --prefix frontend run verify:parity

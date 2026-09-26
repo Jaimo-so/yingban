@@ -1,3 +1,4 @@
+import Script from "next/script";
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
@@ -13,6 +14,8 @@ export default function ProductLayout({ children }: { children: ReactNode }) {
     <html lang="zh-CN">
       <head>
         <BrandAssets />
+        <Script src="/ui-content.js?v=1" strategy="beforeInteractive" />
+        <Script src="/movie-components.js?v=2" strategy="beforeInteractive" />
         <script
           dangerouslySetInnerHTML={{
             __html:
