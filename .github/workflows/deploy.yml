@@ -1,0 +1,77 @@
+name: Test and deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: yingban-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      # actions/setup-python@v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.12'
+      - name: Set up Node.js
+        # actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run product tests
+        run: python -m unittest discover -s tests -p 'test_*.py' -q
+      - name: Build and verify frontend
+        run: |
+          npm --prefix frontend ci
+          npm --prefix frontend run build
+          npm --prefix frontend run verify:parity
+      - name: Build release bundle
+        run: python scripts/build_release.py "$RUNNER_TEMP/yingban-release.tar.gz"
+      - name: Deploy main to production
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          SSH_KEY: ${{ secrets.YINGBAN_DEPLOY_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.YINGBAN_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ vars.YINGBAN_HOST }}
+          DEPLOY_USER: ${{ vars.YINGBAN_USER }}
+          DEPLOY_PORT: ${{ vars.YINGBAN_PORT }}
+          HEALTH_URL: ${{ vars.YINGBAN_HEALTH_URL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SSH_KEY"
+          test -n "$SSH_KNOWN_HOSTS"
+          test -n "$DEPLOY_HOST"
+          test -n "$DEPLOY_USER"
+          test -n "$HEALTH_URL"
+          install -d -m 700 "$RUNNER_TEMP/yingban-ssh"
+          trap 'rm -rf "$RUNNER_TEMP/yingban-ssh"' EXIT
+          printf '%s\n' "$SSH_KEY" > "$RUNNER_TEMP/yingban-ssh/key"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/yingban-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/yingban-ssh/"*
+          ssh -T -p "${DEPLOY_PORT:-22}" \
+            -i "$RUNNER_TEMP/yingban-ssh/key" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$RUNNER_TEMP/yingban-ssh/known_hosts" \
+            -o ConnectTimeout=15 -o ServerAliveInterval=15 \
+            "$DEPLOY_USER@$DEPLOY_HOST" "deploy $GITHUB_SHA" < "$RUNNER_TEMP/yingban-release.tar.gz"
+          curl --fail --silent --show-error --retry 3 "$HEALTH_URL" > "$RUNNER_TEMP/health.json"
+          python -c 'import json,sys; h=json.load(open(sys.argv[1])); assert h.get("ok") is True and h.get("local_open_access") is False; print("Public health verified")' "$RUNNER_TEMP/health.json"

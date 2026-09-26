@@ -232,7 +232,6 @@ function showAuthenticated(me) {
   $("#watched-count").textContent = me.account?.watched_count ?? 0;
   state.accountHint = me.account?.id_hint || "account";
   localConversationStore.migrateLegacyDrafts();
-  $("#mode-badge").hidden = !me.demo_mode;
   state.voiceConfigured = Boolean(me.voice_available);
   state.openings = { ...state.openings, ...(me.openings || {}) };
   state.skills = Array.isArray(me.skills) ? me.skills : [];
@@ -255,7 +254,7 @@ function showLogin() {
   state.authenticated = false;
   $("#login-view").hidden = false;
   $("#app-shell").hidden = true;
-  $("#invite-code").focus();
+  showAuthMode("login");
 }
 
 async function boot() {
@@ -493,7 +492,7 @@ async function requestChat(payload) {
     state.activeSkillKey = null;
     localConversationStore.writeCurrent("");
     renderSkillToolbar();
-    showToast("原对话 Skill 已不可用，已切换到自由聊电影");
+    showToast("原对话 Skill 已不可用，已切换到闲聊模式");
     return api("/api/chat", {
       method: "POST",
       body: JSON.stringify({ ...payload, skill_key: null }),
@@ -525,7 +524,7 @@ function renderSkillToolbar() {
   const active = enabledSkill(state.activeSkillKey);
   const discussion = state.mode === "discussion";
   $("#discussion-skill-actions").hidden = !discussion;
-  $("#clear-active-skill").hidden = !discussion || !active;
+  $("#casual-chat-mode").setAttribute("aria-pressed", String(discussion && !active));
   $("#view-skill-records").hidden = !(
     discussion && active?.key === "viewing_cognition_archive" && state.selectedMovie
   );
@@ -539,9 +538,9 @@ function renderSkillToolbar() {
     $("#active-skill-description").textContent = active.description;
     return;
   }
-  $("#active-skill-name").textContent = discussion ? "自由聊电影" : "常规选片";
+  $("#active-skill-name").textContent = discussion ? "闲聊模式" : "常规选片";
   $("#active-skill-description").textContent = discussion
-    ? "普通聊天不会自动生成或保存正式内容。"
+    ? "默认自由聊天；需要时再选择 Skill。"
     : "院线新片 Skill 已停用，当前使用基础推荐能力。";
 }
 
@@ -575,18 +574,15 @@ async function openChat(mode, movie = null, options = {}) {
     state.skills = Array.isArray(me.skills) ? me.skills : state.skills;
   } catch { /* keep the last known openings */ }
   const restored = options.conversation || null;
-  const restoredSkill = enabledSkill(restored?.skill_key);
   state.returnToChatFromHistory = false;
   state.mode = mode;
   state.activeSkillKey = mode === "recommendation" && enabledSkill("movie_decision_support")
     ? "movie_decision_support"
-    : (restoredSkill?.module === mode ? restoredSkill.key : null);
+    : null;
   state.lastSkillUserText = "";
   state.lastSkillAssistantText = "";
   state.chatHistory = restored?.history ? [...restored.history] : [];
-  state.currentConversationId = mode === "discussion"
-    ? (restored?.id || localConversationStore.newId())
-    : null;
+  state.currentConversationId = restored?.id || localConversationStore.newId();
   state.currentConversationCreatedAt = Number(restored?.created_at || Date.now());
   state.restoredConversation = Boolean(restored);
   state.chatAutoFollow = true;
@@ -621,7 +617,7 @@ async function openChat(mode, movie = null, options = {}) {
     else renderMessage("assistant", opening);
     $("#chat-input").value = restored.input || "";
     $("#spoilers-allowed").checked = restored.spoilers_allowed !== false;
-    $("#chat-draft-message").textContent = `正在查看 ${restored.title || "这段"} 历史对话；本机副本保留 7 天，绑定电影后的消息会同步到服务端供管理员查看。`;
+    $("#chat-draft-message").textContent = `正在查看 ${restored.title || "这段"} 历史对话；本机副本保留 7 天，新的成功聊天会保存在服务端供管理员查看。`;
     $("#chat-draft-clear").textContent = "开始新对话";
     $("#chat-draft-notice").hidden = false;
   } else {
@@ -698,7 +694,7 @@ function renderConversationHistory(movie = state.conversationHistoryMovie) {
     const text = document.createElement("p");
     text.textContent = movie
       ? `从“我的电影”继续聊《${movie.title_zh}》；本机历史保留 7 天，消息会同步到服务端供管理员查看。`
-      : "从一部刚看完的电影开始；本机历史保留 7 天，确认电影后的消息会同步到服务端。";
+      : "从一部刚看完的电影开始；本机历史保留 7 天，新的成功聊天会保存在服务端。";
     const start = document.createElement("button");
     start.type = "button";
     start.className = "button button-primary";
@@ -1152,6 +1148,7 @@ async function sendMessage(forcedText = null, options = {}) {
   $("#send-button").disabled = true;
   try {
     const data = await requestChat({
+      conversation_id: state.currentConversationId,
       mode: state.mode,
       message: text,
       history: priorHistory,
@@ -1160,6 +1157,7 @@ async function sendMessage(forcedText = null, options = {}) {
       skill_key: state.activeSkillKey,
       region: "CN",
     });
+    state.currentConversationId = data.conversation_id || state.currentConversationId;
     loading.remove();
     if (data.selected_movie) {
       state.selectedMovieId = data.selected_movie.id;
@@ -1921,6 +1919,20 @@ async function setVoiceAutoPlay(enabled) {
   }
 }
 
+function showAuthMode(mode) {
+  const registering = mode === "register";
+  $("#login-form").hidden = registering;
+  $("#register-form").hidden = !registering;
+  $("#show-login").classList.toggle("is-active", !registering);
+  $("#show-register").classList.toggle("is-active", registering);
+  $("#show-login").setAttribute("aria-pressed", String(!registering));
+  $("#show-register").setAttribute("aria-pressed", String(registering));
+  $(registering ? "#register-username" : "#login-username").focus();
+}
+
+$("#show-login").addEventListener("click", () => showAuthMode("login"));
+$("#show-register").addEventListener("click", () => showAuthMode("register"));
+
 $("#login-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const button = event.currentTarget.querySelector("button");
@@ -1930,8 +1942,39 @@ $("#login-form").addEventListener("submit", async (event) => {
   try {
     await api("/api/auth/login", {
       method: "POST",
-      body: JSON.stringify({ invite_code: $("#invite-code").value }),
+      body: JSON.stringify({ username: $("#login-username").value, password: $("#login-password").value }),
     });
+    const me = await api("/api/me");
+    $("#login-password").value = "";
+    showAuthenticated(me);
+  } catch (error) {
+    errorNode.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$("#register-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = event.currentTarget.querySelector("button[type=submit]");
+  const errorNode = $("#register-error");
+  if ($("#register-password").value !== $("#register-confirm").value) {
+    errorNode.textContent = "两次输入的密码不一致";
+    return;
+  }
+  button.disabled = true;
+  errorNode.textContent = "";
+  try {
+    await api("/api/auth/register", {
+      method: "POST",
+      body: JSON.stringify({
+        username: $("#register-username").value,
+        password: $("#register-password").value,
+        invite_code: $("#register-invite").value,
+      }),
+    });
+    $("#register-password").value = "";
+    $("#register-confirm").value = "";
     const me = await api("/api/me");
     showAuthenticated(me);
   } catch (error) {
@@ -1966,13 +2009,15 @@ $("#recommendation-card").addEventListener("click", () => openChat("recommendati
 $$('[data-activate-skill]').forEach((button) => {
   button.addEventListener("click", () => activateSkill(button.dataset.activateSkill));
 });
-$("#clear-active-skill").addEventListener("click", () => {
+$("#casual-chat-mode").addEventListener("click", () => {
   state.activeSkillKey = null;
+  state.lastSkillUserText = "";
+  state.lastSkillAssistantText = "";
   localConversationStore.writeCurrent($("#chat-input")?.value || "");
   renderSkillToolbar();
   renderChips(["我很喜欢，但说不上为什么", "有个地方我一直没看懂", "结局让我有点难受"]);
   $("#chat-input").placeholder = "片名，或者看完后的第一句话……";
-  showToast("已回到自由聊电影");
+  showToast("已切换到闲聊模式");
 });
 $("#view-skill-records").addEventListener("click", () => {
   openCognitionEditor("", "").catch((error) => showToast(error.message));

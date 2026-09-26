@@ -457,7 +457,7 @@ function renderSkillManagement(skills) {
     const activeText = document.createElement("span");
     activeText.textContent = `当前生效：v${skill.active_version}`;
     const activation = document.createElement("span");
-    activation.textContent = `激活：${skill.activation_mode === "module_default" ? "模块默认" : "显式入口或意图识别"}`;
+    activation.textContent = `激活：${skill.activation_mode === "module_default" ? "模块默认" : "手动选择"}`;
     const draftText = document.createElement("span");
     draftText.textContent = skill.draft ? `草稿：v${skill.draft.version}` : "没有未发布草稿";
     versionLine.append(activeText, activation, draftText);
@@ -790,6 +790,105 @@ function showDashboardShell() {
   $("#admin-login").hidden = true;
   $("#admin-dashboard").hidden = false;
   $("#admin-logout").hidden = localOpenAccess;
+  activateModule(location.hash.slice(1) || "health-overview");
+}
+
+const ADMIN_MODULES = [
+  "health-overview", "account-settings", "chat-settings", "api-settings",
+  "opening-settings", "prompt-settings", "skill-settings", "invite-settings",
+];
+let accountPage = 1;
+let chatPage = 1;
+
+function activateModule(requested) {
+  const id = ADMIN_MODULES.includes(requested) && !(requested === "invite-settings" && localOpenAccess)
+    ? requested : "health-overview";
+  ADMIN_MODULES.forEach((module) => { $(`#${module}`).hidden = module !== id; });
+  document.querySelectorAll(".section-nav a").forEach((link) => {
+    const active = link.getAttribute("href") === `#${id}`;
+    link.classList.toggle("is-active", active);
+    if (active) link.setAttribute("aria-current", "page");
+    else link.removeAttribute("aria-current");
+  });
+  const heading = $(`#${id} h2`)?.textContent || "配置中心";
+  $(".dashboard-intro h1").textContent = heading;
+  document.title = `${heading} · 影伴管理台`;
+  if (id === "account-settings") loadAccounts().catch((error) => toast(error.message));
+  if (id === "chat-settings") loadChats().catch((error) => toast(error.message));
+  window.scrollTo({ top: 0 });
+}
+
+function renderPageControls(selector, data, onPage) {
+  const container = $(selector);
+  const pages = Math.max(1, Math.ceil(data.total / data.page_size));
+  const label = document.createElement("span");
+  label.textContent = `共 ${data.total} 条 · 第 ${data.page} / ${pages} 页`;
+  const previous = actionButton("上一页", () => onPage(data.page - 1));
+  previous.disabled = data.page <= 1;
+  const next = actionButton("下一页", () => onPage(data.page + 1));
+  next.disabled = data.page >= pages;
+  container.replaceChildren(label, previous, next);
+}
+
+function tableCell(value) {
+  const cell = document.createElement("td");
+  cell.textContent = value == null || value === "" ? "—" : String(value);
+  return cell;
+}
+
+async function loadAccounts(page = accountPage) {
+  const search = $("#account-search").value.trim();
+  const data = await api(`/api/admin/accounts?page=${page}&search=${encodeURIComponent(search)}`);
+  accountPage = data.page;
+  const rows = data.items.map((item) => {
+    const row = document.createElement("tr");
+    const operation = document.createElement("td");
+    operation.append(actionButton("查看聊天", () => {
+      $("#chat-account").value = item.id;
+      chatPage = 1;
+      location.hash = "chat-settings";
+      activateModule("chat-settings");
+    }));
+    row.append(tableCell(item.username || "旧邀请码账户"), tableCell(item.id),
+      tableCell({ active: "正常", suspended: "已暂停", deleted: "已删除" }[item.status] || item.status),
+      tableCell(item.chat_count), tableCell(dateText(item.last_chat_at)),
+      tableCell(dateText(item.created_at)), operation);
+    return row;
+  });
+  $("#account-rows").replaceChildren(...rows);
+  renderPageControls("#account-pagination", data, loadAccounts);
+}
+
+async function loadChats(page = chatPage) {
+  const account = $("#chat-account").value.trim();
+  const data = await api(`/api/admin/chats?page=${page}&account_id=${encodeURIComponent(account)}`);
+  chatPage = data.page;
+  const rows = data.items.map((item) => {
+    const row = document.createElement("tr");
+    const operation = document.createElement("td");
+    operation.append(actionButton("查看", () => openChatDetail(item)));
+    row.append(tableCell(item.username || item.account_id),
+      tableCell(item.mode === "discussion" ? "聊电影" : "找电影"),
+      tableCell(item.movie_title), tableCell(item.message_count),
+      tableCell(dateText(item.created_at)), tableCell(dateText(item.updated_at)), operation);
+    return row;
+  });
+  $("#chat-rows").replaceChildren(...rows);
+  renderPageControls("#chat-pagination", data, loadChats);
+}
+
+async function openChatDetail(item) {
+  const data = await api(`/api/admin/chats/${encodeURIComponent(item.account_id)}/${encodeURIComponent(item.id)}`);
+  $("#chat-detail-title").textContent = data.movie_title ? `《${data.movie_title}》的聊天` : "聊天详情";
+  $("#chat-detail-meta").textContent = `${data.username || data.account_id} · ${data.mode === "discussion" ? "聊电影" : "找电影"} · ${dateText(data.updated_at)}`;
+  const messages = (data.messages || []).map((message) => {
+    const node = document.createElement("div");
+    node.className = `conversation-message conversation-message-${message.role === "user" ? "user" : "assistant"}`;
+    node.textContent = message.content;
+    return node;
+  });
+  $("#chat-detail-messages").replaceChildren(...messages);
+  $("#chat-detail-dialog").showModal();
 }
 
 function inviteRow(invite) {
@@ -1328,4 +1427,21 @@ $("#admin-logout").addEventListener("click", async () => {
   showLogin();
 });
 
+document.querySelectorAll(".section-nav a").forEach((link) => {
+  link.addEventListener("click", () => activateModule(link.hash.slice(1)));
+});
+window.addEventListener("hashchange", () => {
+  if (!$("#admin-dashboard").hidden) activateModule(location.hash.slice(1));
+});
+$("#account-filter").addEventListener("submit", (event) => {
+  event.preventDefault();
+  loadAccounts(1).catch((error) => toast(error.message));
+});
+$("#chat-filter").addEventListener("submit", (event) => {
+  event.preventDefault();
+  loadChats(1).catch((error) => toast(error.message));
+});
+$("#refresh-accounts").addEventListener("click", () => loadAccounts().catch((error) => toast(error.message)));
+$("#refresh-chats").addEventListener("click", () => loadChats().catch((error) => toast(error.message)));
+$("#chat-detail-close").addEventListener("click", () => $("#chat-detail-dialog").close());
 loadDashboard();

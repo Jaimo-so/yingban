@@ -105,7 +105,9 @@
 
     const footer = el("footer", "share-artifact-footer");
     const brand = el("div", "share-artifact-brand");
-    appendText(brand, "span", "share-artifact-brand-mark", "映");
+    const mark = el("span", "share-artifact-brand-mark");
+    mark.setAttribute("aria-hidden", "true");
+    brand.append(mark);
     appendText(brand, "strong", "", "影伴");
     appendText(footer, "p", "", content.attribution || "由影伴 AI 协助整理");
     footer.prepend(brand);

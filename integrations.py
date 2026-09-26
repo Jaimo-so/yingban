@@ -141,6 +141,18 @@ def _normalized_movie_title(value: Any) -> str:
     return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", str(value or "").lower())
 
 
+def _poster_search_title(value: Any, source: Any) -> str:
+    title = str(value or "").strip()
+    if source == "china-film-data":
+        # Official re-release labels are not part of the catalog movie title.
+        # Keep meaningful parenthetical titles and sequel numbers intact.
+        title = re.sub(
+            r"\s*[（(](?:加码臻享版|重映版|修复版|[24]K修复版|IMAX版|3D版)[）)]\s*$",
+            "", title, flags=re.IGNORECASE,
+        ).strip()
+    return title
+
+
 @dataclass(frozen=True)
 class InternetConfig:
     tmdb_api_key: str
@@ -920,7 +932,10 @@ class InternetRuntime:
                 payload = self._tmdb_get(
                     "search/movie",
                     {
-                        "query": str(current.get("title_zh") or current.get("title_original") or "")[:160],
+                        "query": _poster_search_title(
+                            current.get("title_zh") or current.get("title_original"),
+                            current.get("source"),
+                        )[:160],
                         "language": "zh-CN",
                         "include_adult": "false",
                     },
@@ -937,9 +952,11 @@ class InternetRuntime:
                 hydrated.append(current)
                 continue
             expected_titles = {
-                _normalized_movie_title(current.get("title_zh")),
-                _normalized_movie_title(current.get("title_original")),
-                *(_normalized_movie_title(alias) for alias in current.get("aliases") or []),
+                _normalized_movie_title(_poster_search_title(title, current.get("source")))
+                for title in (
+                    current.get("title_zh"), current.get("title_original"),
+                    *(current.get("aliases") or []),
+                )
             }
             expected_titles.discard("")
             expected_year = int(current.get("year") or 0)
@@ -951,7 +968,7 @@ class InternetRuntime:
                 }
                 release_year = str(item.get("release_date") or "")[:4]
                 score = 8 if expected_titles.intersection(titles) else 0
-                if expected_year and release_year == str(expected_year):
+                if score and expected_year and release_year == str(expected_year):
                     score += 5
                 return score, float(item.get("popularity") or 0)
 

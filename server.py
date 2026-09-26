@@ -30,7 +30,7 @@ from product_skills import (
     VIEWING_COGNITION_SKILL,
 )
 from settings import Settings, is_loopback_host
-from storage import InviteError, Store
+from storage import CredentialError, InviteError, Store
 from voice import VoiceRuntime
 
 
@@ -75,6 +75,7 @@ class LoginLimiter:
 
 
 LOGIN_LIMITER = LoginLimiter()
+REGISTER_LIMITER = LoginLimiter(attempts=8, window_seconds=300)
 EPHEMERAL_AUDIO: dict[str, tuple[float, bytes, str]] = {}
 EPHEMERAL_AUDIO_LOCK = threading.Lock()
 
@@ -654,6 +655,36 @@ class YingbanHandler(BaseHTTPRequestHandler):
             })
             return
 
+        if path == "/api/admin/accounts":
+            if not self._require_admin():
+                return
+            self._json(self.app.store.admin_accounts_page(
+                (query.get("search") or [""])[0],
+                self._admin_page_number(query),
+            ))
+            return
+
+        if path == "/api/admin/chats":
+            if not self._require_admin():
+                return
+            self._json(self.app.store.admin_chat_page(
+                (query.get("account_id") or [""])[0],
+                self._admin_page_number(query),
+            ))
+            return
+
+        if path.startswith("/api/admin/chats/"):
+            if not self._require_admin():
+                return
+            parts = path.removeprefix("/api/admin/chats/").split("/")
+            if len(parts) != 2:
+                self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+                return
+            record = self.app.store.admin_chat_detail(unquote(parts[0]), unquote(parts[1]))
+            self._json(record or {"error": "对话不存在"},
+                       HTTPStatus.OK if record else HTTPStatus.NOT_FOUND)
+            return
+
         if path.startswith("/api/admin/invites/") and path.endswith("/conversations"):
             if not self._require_admin():
                 return
@@ -720,6 +751,9 @@ class YingbanHandler(BaseHTTPRequestHandler):
 
         if path == "/api/auth/login":
             self._login(payload)
+            return
+        if path == "/api/auth/register":
+            self._register(payload)
             return
         if path == "/api/auth/logout":
             token = cookie_value(self.headers, USER_COOKIE)
@@ -1499,17 +1533,21 @@ class YingbanHandler(BaseHTTPRequestHandler):
         if not LOGIN_LIMITER.allowed(remote):
             self._json({"error": "尝试次数过多，请稍后再试"}, HTTPStatus.TOO_MANY_REQUESTS)
             return
-        code = str(payload.get("invite_code", "")).strip()
-        if not code:
-            self._json({"error": "请输入邀请码"}, HTTPStatus.BAD_REQUEST)
-            return
         try:
-            account_id, token = self.app.store.login_with_invite(
-                code, self.app.settings.session_days
-            )
-        except InviteError as error:
+            if "invite_code" in payload:
+                account_id, token = self.app.store.login_with_invite(
+                    str(payload.get("invite_code", "")), self.app.settings.session_days
+                )
+            else:
+                password = str(payload.get("password", ""))
+                if len(password) > 128:
+                    raise CredentialError("用户名或密码错误")
+                account_id, token = self.app.store.login_with_password(
+                    str(payload.get("username", "")), password, self.app.settings.session_days
+                )
+        except (InviteError, CredentialError) as error:
             LOGIN_LIMITER.failure(remote)
-            self.app.store.record_product_event("login_failed", properties={"error_category": "invalid_invite"})
+            self.app.store.record_product_event("login_failed", properties={"error_category": "invalid_credentials"})
             self._json({"error": str(error)}, HTTPStatus.UNAUTHORIZED)
             return
         LOGIN_LIMITER.success(remote)
@@ -1519,6 +1557,24 @@ class YingbanHandler(BaseHTTPRequestHandler):
         self.app.store.record_product_event("login_succeeded", account_id)
         cookie = self._cookie(USER_COOKIE, token, self.app.settings.session_days * 86400)
         self._json({"ok": True, "account": {"id_hint": account_id[-6:]}}, cookies=[cookie])
+
+    def _register(self, payload: dict[str, Any]) -> None:
+        remote = self.client_address[0]
+        if not REGISTER_LIMITER.allowed(remote):
+            self._json({"error": "注册尝试过多，请稍后再试"}, HTTPStatus.TOO_MANY_REQUESTS)
+            return
+        REGISTER_LIMITER.failure(remote)
+        try:
+            account_id, token = self.app.store.register_with_password(
+                str(payload.get("username", "")), str(payload.get("password", "")),
+                self.app.settings.session_days, str(payload.get("invite_code", "")),
+            )
+        except CredentialError as error:
+            self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+        self.app.store.record_product_event("registered", account_id)
+        cookie = self._cookie(USER_COOKIE, token, self.app.settings.session_days * 86400)
+        self._json({"ok": True, "account": {"id_hint": account_id[-6:]}}, cookies=[cookie], status=HTTPStatus.CREATED)
 
     def _admin_login(self, payload: dict[str, Any]) -> None:
         configured = self.app.settings.admin_token
@@ -1553,7 +1609,7 @@ class YingbanHandler(BaseHTTPRequestHandler):
         )
 
         if contains_identity_question(message):
-            self._json(
+            self._chat_reply(account_id, payload, mode, message,
                 {
                     "reply": "我是阿映，一个会记得你看过什么的 AI 电影伙伴，不是真人。我会尽量像一个认真听你说话的电影搭子，但不会编造自己去过电影院或有真实人生经历。",
                     "recommendations": [],
@@ -1563,7 +1619,7 @@ class YingbanHandler(BaseHTTPRequestHandler):
 
         if high_risk(message):
             self.app.store.record_safety_event(account_id, "possible_immediate_harm")
-            self._json(
+            self._chat_reply(account_id, payload, mode, message,
                 {
                     "reply": "我先不急着给你推荐电影。你刚才说的情况听起来可能需要立刻有人陪着你。请先离开可能伤害自己的物品或环境，联系一个你信任、能马上到你身边的人；如果危险正在发生，请联系当地紧急服务或直接前往最近的急诊。你不需要一个人扛着这会儿。",
                     "recommendations": [],
@@ -1572,7 +1628,7 @@ class YingbanHandler(BaseHTTPRequestHandler):
             )
             return
 
-        requested_skill_key = str(payload.get("skill_key", "")).strip() or None
+        requested_skill_key = str(payload.get("skill_key") or "").strip() or None
         try:
             active_skill = self.app.agent.resolve_skill(mode, requested_skill_key, message)
         except ValueError as error:
@@ -1600,7 +1656,7 @@ class YingbanHandler(BaseHTTPRequestHandler):
                 selected_movie = detected[0]
             elif len(detected) > 1:
                 options = "、".join(f"《{item['title_zh']}》（{item['year']}）" for item in detected[:5])
-                self._json(
+                self._chat_reply(account_id, payload, mode, message,
                     {
                         "reply": f"我在你这句话里听到了不止一部：{options}。我们先聊哪一部？",
                         "recommendations": [],
@@ -1725,7 +1781,7 @@ class YingbanHandler(BaseHTTPRequestHandler):
             if isinstance(agent_activity.get("skill"), dict)
             else ""
         )
-        self._json(
+        self._chat_reply(account_id, payload, mode, message,
             {
                 "reply": reply,
                 "selected_movie": public_movie(selected_movie) if selected_movie else None,
@@ -1746,6 +1802,28 @@ class YingbanHandler(BaseHTTPRequestHandler):
                 "candidate_scope": candidate_scope,
             }
         )
+
+    @staticmethod
+    def _admin_page_number(query: dict[str, list[str]]) -> int:
+        try:
+            return min(100000, max(1, int((query.get("page") or ["1"])[0])))
+        except ValueError:
+            return 1
+
+    def _chat_reply(
+        self, account_id: str, request: dict[str, Any], mode: str,
+        message: str, response: dict[str, Any],
+    ) -> None:
+        movie = response.get("selected_movie")
+        movie_id = str(movie.get("id")) if isinstance(movie, dict) and movie.get("id") else None
+        if not movie_id:
+            selected_id = str(request.get("selected_movie_id") or "")
+            movie_id = selected_id if selected_id and self.app.store.movie(selected_id) else None
+        conversation_id = self.app.store.append_chat_turn(
+            account_id, str(request.get("conversation_id") or ""), mode,
+            message, str(response["reply"]), movie_id,
+        )
+        self._json({**response, "conversation_id": conversation_id})
 
     def _onboarding_payload(self, account_id: str) -> dict[str, Any]:
         profile = self.app.store.account_profile(account_id)
@@ -2286,7 +2364,7 @@ class YingbanHandler(BaseHTTPRequestHandler):
     def _require_user(self) -> str | None:
         account_id = self._account_id()
         if not account_id:
-            self._json({"error": "请先使用邀请码登录"}, HTTPStatus.UNAUTHORIZED)
+            self._json({"error": "请先登录"}, HTTPStatus.UNAUTHORIZED)
         return account_id
 
     def _require_admin(self) -> bool:

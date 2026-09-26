@@ -10,7 +10,8 @@
         window.location.replace("http://127.0.0.1:8765/");
       }
     </script>
-    <link rel="stylesheet" href="/styles.css?v=20">
+    <link rel="icon" type="image/png" href="/brand/logo-screen-dialogue.png?v=1">
+    <link rel="stylesheet" href="/styles.css?v=26">
   </head>
   <body>
     <div class="film-grain" aria-hidden="true"></div>
@@ -18,7 +19,7 @@
     <main id="login-view" class="login-layout">
       <section class="login-story" aria-labelledby="login-title">
         <a class="brand brand-large" href="/" aria-label="影伴首页">
-          <span class="brand-mark" aria-hidden="true">映</span>
+          <span class="brand-mark" aria-hidden="true"></span>
           <span>影伴</span>
         </a>
         <div class="login-copy">
@@ -29,24 +30,43 @@
         <blockquote>“有时我们不是缺一部好电影，只是想找到一部适合现在的电影。”</blockquote>
       </section>
 
-      <section class="login-panel" aria-label="邀请码登录">
+      <section class="login-panel" aria-label="账号登录与注册">
         <div class="login-card">
           <div class="persona-lockup">
             <span class="avatar avatar-large" aria-hidden="true">映</span>
             <div>
               <strong>阿映在等你</strong>
-              <span>本机双击版会直接进入；只有多人或公网部署版需要管理员发放的邀请码</span>
+              <span>登录账号，继续你和电影的故事</span>
             </div>
           </div>
+          <div class="auth-tabs" role="group" aria-label="账号操作">
+            <button id="show-login" class="auth-tab is-active" type="button" aria-pressed="true">登录</button>
+            <button id="show-register" class="auth-tab" type="button" aria-pressed="false">注册</button>
+          </div>
           <form id="login-form">
-            <label for="invite-code">邀请码</label>
-            <input id="invite-code" name="invite_code" autocomplete="current-password" spellcheck="false" placeholder="YB-XXXXX-XXXXX-XXXXX-XXXXX" required>
+            <label for="login-username">用户名</label>
+            <input id="login-username" name="username" autocomplete="username" required maxlength="32">
+            <label for="login-password">密码</label>
+            <input id="login-password" name="password" type="password" autocomplete="current-password" required>
             <p id="login-error" class="form-error" role="alert"></p>
             <button class="button button-primary button-full" type="submit">
-              <span>进入影伴</span><span aria-hidden="true">→</span>
+              <span>登录影伴</span><span aria-hidden="true">→</span>
             </button>
           </form>
-          <p class="fine-print">邀请码就是你的登录凭证，请像保管密码一样保管它。</p>
+          <form id="register-form" hidden>
+            <label for="register-username">用户名</label>
+            <input id="register-username" name="username" autocomplete="username" minlength="3" maxlength="32" pattern="[A-Za-z][A-Za-z0-9_]{2,31}" placeholder="例如：movie_fan" aria-describedby="register-username-hint" title="3～32 个字符，以英文字母开头，仅支持英文字母、数字和下划线（_）" required>
+            <p id="register-username-hint" class="form-hint">3～32 个字符，以英文字母开头，仅支持英文字母、数字和下划线（_），不区分大小写。</p>
+            <label for="register-password">密码</label>
+            <input id="register-password" name="password" type="password" autocomplete="new-password" minlength="8" maxlength="128" required>
+            <label for="register-confirm">确认密码</label>
+            <input id="register-confirm" name="confirm_password" type="password" autocomplete="new-password" required>
+            <label for="register-invite">原邀请码（已有电影记录时填写）</label>
+            <input id="register-invite" name="invite_code" autocomplete="off" spellcheck="false" placeholder="选填：绑定原账户和电影记录">
+            <p id="register-error" class="form-error" role="alert"></p>
+            <button class="button button-primary button-full" type="submit"><span>创建账号</span><span aria-hidden="true">→</span></button>
+          </form>
+          <p class="fine-print">已有邀请码的用户可在注册时绑定原账户；新用户可直接注册。本机双击版会直接进入。</p>
         </div>
       </section>
     </main>
@@ -54,7 +74,7 @@
     <div id="app-shell" class="app-shell" hidden>
       <header class="topbar">
         <button id="brand-home" class="brand brand-button" type="button" aria-label="返回影伴首页">
-          <span class="brand-mark" aria-hidden="true">映</span>
+          <span class="brand-mark" aria-hidden="true"></span>
           <span>影伴</span>
         </button>
         <nav aria-label="主要导航">
@@ -62,7 +82,6 @@
           <button class="nav-link" data-nav="history" type="button">我的电影 <span id="watched-count" class="count-badge">0</span></button>
         </nav>
         <div class="account-actions">
-          <span id="mode-badge" class="demo-badge" hidden>演示模式</span>
           <button id="logout-button" class="icon-button" type="button" title="退出登录" aria-label="退出登录">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17l5-5-5-5M15 12H3M14 3h5a2 2 0 012 2v14a2 2 0 01-2 2h-5"/></svg>
           </button>
@@ -180,21 +199,21 @@
           </div>
 
           <div id="chat-draft-notice" class="chat-draft-notice" hidden>
-            <span id="chat-draft-message">本机历史最多保留 7 天；绑定电影后的消息会同步到服务端供管理员查看。</span>
+            <span id="chat-draft-message">本机历史最多保留 7 天；新的成功聊天会保存在服务端供管理员查看。</span>
             <button id="chat-draft-clear" class="text-button" type="button">开始新对话</button>
           </div>
 
-          <section id="skill-toolbar" class="skill-toolbar" aria-label="当前对话技能">
+          <section id="skill-toolbar" class="skill-toolbar" aria-label="聊天模式">
             <div>
-              <span class="eyebrow">ACTIVE SKILL</span>
-              <strong id="active-skill-name">自由聊电影</strong>
-              <span id="active-skill-description">普通聊天不会自动生成或保存正式内容。</span>
+              <span class="eyebrow">聊天模式</span>
+              <strong id="active-skill-name">闲聊模式</strong>
+              <span id="active-skill-description">默认自由聊天；需要时再选择 Skill。</span>
             </div>
             <div id="discussion-skill-actions" class="skill-toolbar-actions">
+              <button id="casual-chat-mode" class="mini-button" type="button" aria-pressed="true">闲聊模式</button>
               <button class="mini-button" type="button" data-activate-skill="structured_review_creation">创作发布内容</button>
               <button class="mini-button" type="button" data-activate-skill="viewing_cognition_archive">记录重看认识</button>
               <button id="view-skill-records" class="mini-button" type="button" hidden>查看已存记录</button>
-              <button id="clear-active-skill" class="text-button" type="button" hidden>退出 Skill</button>
             </div>
           </section>
 
@@ -379,7 +398,7 @@
         <button class="icon-button" value="cancel" aria-label="关闭历史对话">×</button>
       </form>
       <div class="utility-dialog-body conversation-history-body">
-        <p>本机历史默认 7 天后自动过期；确认电影后的对话会同步到服务端，并可由管理员按邀请码账户查看。</p>
+        <p>本机历史默认 7 天后自动过期；新的成功聊天会保存在服务端，并可由管理员按账户查看。</p>
         <p id="conversation-history-count" class="conversation-history-count" aria-live="polite"></p>
         <div id="conversation-history-list" class="conversation-history-list"></div>
       </div>
@@ -438,7 +457,7 @@
         <button class="icon-button" value="cancel" aria-label="关闭设置">×</button>
       </form>
       <div class="utility-dialog-body settings-stack">
-        <section><h3>本机历史对话</h3><p>每次进入“聊电影”都会开始新对话；本机副本默认 7 天后自动过期。绑定电影后的对话还会同步到服务端，供管理员按邀请码账户查看；清空本机副本不会删除服务端记录。</p><button id="clear-all-local-drafts" class="button button-secondary" type="button">清空此设备全部历史对话</button></section>
+        <section><h3>本机历史对话</h3><p>每次进入“聊电影”都会开始新对话；本机副本默认 7 天后自动过期。新的成功聊天会保存在服务端，供管理员按账户查看；清空本机副本不会删除服务端记录。</p><button id="clear-all-local-drafts" class="button button-secondary" type="button">清空此设备全部历史对话</button></section>
       </div>
     </dialog>
 
@@ -468,6 +487,6 @@
     </dialog>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/app.js?v=29" defer></script>
+    <script src="/app.js?v=33" defer></script>
   </body>
 </html>

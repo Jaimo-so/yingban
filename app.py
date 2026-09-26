@@ -57,7 +57,7 @@ def serve(app: AppContext) -> None:
     print(f"影伴已启动：http://{app.settings.host}:{app.settings.port}")
     print(f"管理员后台：http://{app.settings.host}:{app.settings.port}/admin")
     print(f"当前模式：{mode}")
-    print(f"访问方式：{'本机免认证' if app.settings.local_open_access else '邀请码与管理员口令'}")
+    print(f"访问方式：{'本机免认证' if app.settings.local_open_access else '账号密码注册登录与管理员口令'}")
     print(f"联网电影：{'已接入' if app.internet and app.internet.config().movie_enabled else '未配置'}")
     print(f"语音交互：{'已接入' if app.voice and app.voice.config().enabled else '未配置'}")
     print(f"图像模型：{'已接入' if app.image and app.image.config().enabled else '未配置'}")

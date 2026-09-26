@@ -7,7 +7,7 @@ export default function AdminPage() {
   return (
     <>
       <LegacyMarkup html={readLegacyBody("admin.html")} />
-      <Script src="/admin.js?v=20" strategy="afterInteractive" />
+      <Script src="/admin.js?v=22" strategy="afterInteractive" />
     </>
   );
 }

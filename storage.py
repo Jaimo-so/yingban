@@ -16,6 +16,8 @@ from urllib.parse import urlencode
 
 
 INVITE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+USERNAME_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_]{2,31}\Z")
+PASSWORD_ITERATIONS = 600_000
 
 
 class InviteError(ValueError):
@@ -23,6 +25,10 @@ class InviteError(ValueError):
 
 
 class SessionError(ValueError):
+    pass
+
+
+class CredentialError(ValueError):
     pass
 
 
@@ -122,6 +128,15 @@ class Store:
                     id TEXT PRIMARY KEY,
                     status TEXT NOT NULL DEFAULT 'active'
                         CHECK(status IN ('active', 'suspended', 'deleted')),
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS account_credentials (
+                    account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+                    username TEXT NOT NULL UNIQUE,
+                    password_salt BLOB NOT NULL,
+                    password_hash BLOB NOT NULL,
+                    password_iterations INTEGER NOT NULL,
                     created_at TEXT NOT NULL
                 );
 
@@ -283,6 +298,21 @@ class Store:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY(account_id, id)
                 );
+
+                CREATE TABLE IF NOT EXISTS chat_records (
+                    id TEXT NOT NULL,
+                    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                    mode TEXT NOT NULL CHECK(mode IN ('discussion', 'recommendation')),
+                    movie_id TEXT REFERENCES movies(id) ON DELETE SET NULL,
+                    messages_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(account_id, id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_chat_records_updated
+                    ON chat_records(updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_chat_records_account_updated
+                    ON chat_records(account_id, updated_at DESC);
 
                 CREATE TABLE IF NOT EXISTS weekly_recommendations (
                     id TEXT PRIMARY KEY,
@@ -539,6 +569,14 @@ class Store:
                       WHERE mr.account_id = ums.account_id AND mr.movie_id = ums.movie_id
                   )
                 """
+            )
+
+            # Preserve existing movie-linked chat history in the unified admin view.
+            connection.execute(
+                """INSERT OR IGNORE INTO chat_records
+                   (id, account_id, mode, movie_id, messages_json, created_at, updated_at)
+                   SELECT id, account_id, 'discussion', movie_id, messages_json,
+                          created_at, updated_at FROM conversation_records"""
             )
 
         # The database can contain the administrator-configured model key.
@@ -1390,6 +1428,10 @@ class Store:
             ).fetchone()
             if account is None or account["status"] != "active":
                 raise InviteError("账户当前不可用")
+            if connection.execute(
+                "SELECT 1 FROM account_credentials WHERE account_id = ?", (account_id,)
+            ).fetchone():
+                raise InviteError("该账户已启用密码，请使用用户名和密码登录")
 
             token = secrets.token_urlsafe(32)
             connection.execute(
@@ -1406,6 +1448,103 @@ class Store:
                     (now + timedelta(days=session_days)).isoformat(),
                 ),
             )
+        return account_id, token
+
+    @staticmethod
+    def _clean_username(username: str) -> str:
+        value = username.strip().lower()
+        if not USERNAME_RE.fullmatch(value):
+            raise CredentialError("用户名须以字母开头，使用 3～32 位字母、数字或下划线")
+        return value
+
+    @staticmethod
+    def _check_password(password: str) -> None:
+        if not 8 <= len(password) <= 128:
+            raise CredentialError("密码须为 8～128 个字符")
+
+    def _new_session(self, connection: sqlite3.Connection, account_id: str, days: int) -> str:
+        token = secrets.token_urlsafe(32)
+        now = datetime.now(UTC)
+        connection.execute(
+            "INSERT INTO sessions (id, token_digest, account_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+            ("ses_" + secrets.token_hex(10), self._session_digest(token), account_id,
+             now.isoformat(), (now + timedelta(days=days)).isoformat()),
+        )
+        return token
+
+    def register_with_password(
+        self, username: str, password: str, session_days: int, invite_code: str = ""
+    ) -> tuple[str, str]:
+        username = self._clean_username(username)
+        self._check_password(password)
+        salt = secrets.token_bytes(16)
+        password_hash = hashlib.pbkdf2_hmac(
+            "sha256", password.encode("utf-8"), salt, PASSWORD_ITERATIONS
+        )
+        now = utc_now()
+        with self.transaction(immediate=True) as connection:
+            if connection.execute(
+                "SELECT 1 FROM account_credentials WHERE username = ?", (username,)
+            ).fetchone():
+                raise CredentialError("用户名已被使用")
+            if invite_code.strip():
+                invite = connection.execute(
+                    "SELECT id, status, account_id FROM invite_codes WHERE code_digest = ?",
+                    (self._invite_digest(invite_code),),
+                ).fetchone()
+                if invite is None or invite["status"] == "revoked":
+                    raise CredentialError("邀请码无效或已停用")
+                account_id = str(invite["account_id"] or "usr_" + secrets.token_hex(12))
+                if invite["status"] == "issued":
+                    connection.execute(
+                        "INSERT INTO accounts (id, status, created_at) VALUES (?, 'active', ?)",
+                        (account_id, now),
+                    )
+                    connection.execute(
+                        "UPDATE invite_codes SET status = 'active', account_id = ?, activated_at = ? WHERE id = ?",
+                        (account_id, now, invite["id"]),
+                    )
+            else:
+                account_id = "usr_" + secrets.token_hex(12)
+                connection.execute(
+                    "INSERT INTO accounts (id, status, created_at) VALUES (?, 'active', ?)",
+                    (account_id, now),
+                )
+            account = connection.execute(
+                "SELECT status FROM accounts WHERE id = ?", (account_id,)
+            ).fetchone()
+            if account is None or account["status"] != "active":
+                raise CredentialError("账户当前不可用")
+            if connection.execute(
+                "SELECT 1 FROM account_credentials WHERE account_id = ?", (account_id,)
+            ).fetchone():
+                raise CredentialError("该账户已绑定用户名")
+            connection.execute(
+                "INSERT INTO account_credentials (account_id, username, password_salt, password_hash, password_iterations, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (account_id, username, salt, password_hash, PASSWORD_ITERATIONS, now),
+            )
+            token = self._new_session(connection, account_id, session_days)
+        return account_id, token
+
+    def login_with_password(self, username: str, password: str, session_days: int) -> tuple[str, str]:
+        try:
+            username = self._clean_username(username)
+        except CredentialError:
+            username = ""
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT c.account_id, c.password_salt, c.password_hash, c.password_iterations "
+                "FROM account_credentials c JOIN accounts a ON a.id = c.account_id "
+                "WHERE c.username = ? AND a.status = 'active'", (username,),
+            ).fetchone()
+        salt = row["password_salt"] if row else bytes(16)
+        iterations = int(row["password_iterations"]) if row else PASSWORD_ITERATIONS
+        actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+        if row is None or not hmac.compare_digest(actual, row["password_hash"]):
+            raise CredentialError("用户名或密码错误")
+        account_id = str(row["account_id"])
+        with self.transaction(immediate=True) as connection:
+            token = self._new_session(connection, account_id, session_days)
         return account_id, token
 
     def ensure_local_account(self) -> str:
@@ -1623,6 +1762,105 @@ class Store:
             "created_at": created_at,
             "updated_at": now,
         }
+
+    def append_chat_turn(
+        self, account_id: str, conversation_id: str, mode: str,
+        user_message: str, assistant_message: str, movie_id: str | None = None,
+    ) -> str:
+        clean_id = str(conversation_id or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{8,100}", clean_id):
+            clean_id = "chat_" + secrets.token_hex(12)
+        if mode not in {"discussion", "recommendation"}:
+            raise ValueError("对话模式无效")
+        now = utc_now()
+        with self.transaction(immediate=True) as connection:
+            existing = connection.execute(
+                "SELECT mode, messages_json FROM chat_records WHERE account_id = ? AND id = ?",
+                (account_id, clean_id),
+            ).fetchone()
+            if existing and existing["mode"] != mode:
+                raise ValueError("对话模式不能改变")
+            messages = json.loads(existing["messages_json"]) if existing else []
+            messages.extend((
+                {"role": "user", "content": user_message},
+                {"role": "assistant", "content": assistant_message},
+            ))
+            connection.execute(
+                """INSERT INTO chat_records
+                   (id, account_id, mode, movie_id, messages_json, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(account_id, id) DO UPDATE SET
+                     movie_id = COALESCE(excluded.movie_id, chat_records.movie_id),
+                     messages_json = excluded.messages_json,
+                     updated_at = excluded.updated_at""",
+                (clean_id, account_id, mode, movie_id,
+                 json.dumps(messages, ensure_ascii=False), now, now),
+            )
+        return clean_id
+
+    def admin_accounts_page(self, search: str = "", page: int = 1, page_size: int = 20) -> dict[str, Any]:
+        page = max(1, page)
+        page_size = min(100, max(1, page_size))
+        escaped = search.strip()[:100].replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped}%"
+        where = "WHERE (? = '' OR c.username LIKE ? ESCAPE '\\' OR a.id LIKE ? ESCAPE '\\')"
+        with self.connect() as connection:
+            total = connection.execute(
+                "SELECT COUNT(*) FROM accounts a LEFT JOIN account_credentials c ON c.account_id = a.id " + where,
+                (search.strip(), pattern, pattern),
+            ).fetchone()[0]
+            rows = connection.execute(
+                """SELECT a.id, a.status, a.created_at, c.username,
+                          (SELECT COUNT(*) FROM chat_records h WHERE h.account_id = a.id) AS chat_count,
+                          (SELECT MAX(h.updated_at) FROM chat_records h WHERE h.account_id = a.id) AS last_chat_at
+                   FROM accounts a LEFT JOIN account_credentials c ON c.account_id = a.id """
+                + where + " ORDER BY a.created_at DESC LIMIT ? OFFSET ?",
+                (search.strip(), pattern, pattern, page_size, (page - 1) * page_size),
+            ).fetchall()
+        return {"items": [dict(row) for row in rows], "total": total,
+                "page": page, "page_size": page_size}
+
+    def admin_chat_page(
+        self, account_id: str = "", page: int = 1, page_size: int = 20,
+    ) -> dict[str, Any]:
+        page = max(1, page)
+        page_size = min(100, max(1, page_size))
+        with self.connect() as connection:
+            total = connection.execute(
+                "SELECT COUNT(*) FROM chat_records WHERE (? = '' OR account_id = ?)",
+                (account_id, account_id),
+            ).fetchone()[0]
+            rows = connection.execute(
+                """SELECT h.id, h.account_id, h.mode, h.movie_id,
+                          h.created_at, h.updated_at, c.username,
+                          m.title_zh AS movie_title,
+                          json_array_length(h.messages_json) AS message_count
+                   FROM chat_records h
+                   LEFT JOIN account_credentials c ON c.account_id = h.account_id
+                   LEFT JOIN movies m ON m.id = h.movie_id
+                   WHERE (? = '' OR h.account_id = ?)
+                   ORDER BY h.updated_at DESC LIMIT ? OFFSET ?""",
+                (account_id, account_id, page_size, (page - 1) * page_size),
+            ).fetchall()
+        return {"items": [dict(row) for row in rows], "total": total,
+                "page": page, "page_size": page_size}
+
+    def admin_chat_detail(self, account_id: str, conversation_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT h.id, h.account_id, h.mode, h.movie_id, h.messages_json,
+                          h.created_at, h.updated_at, c.username, m.title_zh AS movie_title
+                   FROM chat_records h
+                   LEFT JOIN account_credentials c ON c.account_id = h.account_id
+                   LEFT JOIN movies m ON m.id = h.movie_id
+                   WHERE h.account_id = ? AND h.id = ?""",
+                (account_id, conversation_id),
+            ).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        item["messages"] = json.loads(item.pop("messages_json"))
+        return item
 
     def invite_conversations(self, invite_id: str) -> dict[str, Any]:
         with self.connect() as connection:

@@ -739,17 +739,6 @@ class AgentRuntime:
             return skill
         if mode == "recommendation":
             return self.store.active_skill(MOVIE_DECISION_SKILL, mode)
-        compact = re.sub(r"\s+", "", str(message)).lower()
-        content_intent = (
-            "小红书", "宣推", "宣传稿", "发布稿", "正式影评", "整理成影评", "写成影评"
-        )
-        cognition_intent = (
-            "二刷", "三刷", "重看", "又看了一遍", "记录这次", "观影认知", "和上次相比"
-        )
-        if any(phrase in compact for phrase in content_intent):
-            return self.store.active_skill(STRUCTURED_REVIEW_SKILL, mode)
-        if any(phrase in compact for phrase in cognition_intent):
-            return self.store.active_skill(VIEWING_COGNITION_SKILL, mode)
         return None
 
     def skill_preview(self, skill_key: str) -> dict[str, Any]:

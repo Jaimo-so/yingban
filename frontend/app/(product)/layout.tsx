@@ -10,13 +10,14 @@ export default function ProductLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="zh-CN">
       <head>
+        <link rel="icon" type="image/png" href="/brand/logo-screen-dialogue.png?v=1" />
         <script
           dangerouslySetInnerHTML={{
             __html:
               'if(window.location.protocol==="file:"){window.location.replace("http://127.0.0.1:8765/")}',
           }}
         />
-        <link rel="stylesheet" href="/styles.css?v=20" />
+        <link rel="stylesheet" href="/styles.css?v=26" />
       </head>
       <body>{children}</body>
     </html>

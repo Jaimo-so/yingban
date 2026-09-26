@@ -11,7 +11,8 @@ export default function ShareLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="zh-CN">
       <head>
-        <link rel="stylesheet" href="/styles.css?v=15" />
+        <link rel="icon" type="image/png" href="/brand/logo-screen-dialogue.png?v=1" />
+        <link rel="stylesheet" href="/styles.css?v=26" />
       </head>
       <body className="share-page">{children}</body>
     </html>

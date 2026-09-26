@@ -5,13 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="robots" content="noindex, nofollow">
     <title>影伴 · 管理后台</title>
-    <link rel="stylesheet" href="/styles.css?v=10">
-    <link rel="stylesheet" href="/admin.css?v=16">
+    <link rel="icon" type="image/png" href="/brand/logo-screen-dialogue.png?v=1">
+    <link rel="stylesheet" href="/styles.css?v=26">
+    <link rel="stylesheet" href="/admin.css?v=19">
   </head>
   <body class="admin-body">
     <header class="admin-topbar">
       <a class="brand" href="/">
-        <span class="brand-mark" aria-hidden="true">映</span>
+        <span class="brand-mark" aria-hidden="true"></span>
         <span>影伴管理台</span>
       </a>
       <button id="admin-logout" class="button button-secondary" type="button" hidden>退出管理</button>
@@ -31,19 +32,27 @@
       </section>
 
       <section id="admin-dashboard" hidden>
+        <div class="admin-shell">
+          <aside class="admin-sidebar" aria-label="管理模块">
+            <div class="sidebar-caption">工作台</div>
+            <nav class="section-nav" aria-label="管理模块导航">
+              <a href="#health-overview" data-icon="◫">产品健康</a>
+              <a href="#account-settings" data-icon="♙">账号管理</a>
+              <a href="#chat-settings" data-icon="☷">聊天记录</a>
+              <a href="#api-settings" data-icon="◇">API 设置</a>
+              <a href="#opening-settings" data-icon="✎">开场白</a>
+              <a href="#prompt-settings" data-icon="≡">Agent 提示词</a>
+              <a href="#skill-settings" data-icon="✦">Skill 管理</a>
+              <a href="#invite-settings" data-icon="▣">邀请码</a>
+            </nav>
+            <a class="sidebar-home" href="/">↗ 返回影伴网站</a>
+          </aside>
+          <div class="admin-workspace">
         <div class="dashboard-intro">
           <div>
-            <p class="eyebrow">AGENT CONTROL ROOM</p>
+            <p class="eyebrow">首页 / 管理模块</p>
             <h1>配置中心</h1>
-            <p>模型、模块提示词和账户入口按保存结果生效；Skill 修改先成为草稿，明确发布后才进入运行时。</p>
           </div>
-          <nav class="section-nav" aria-label="配置中心导航">
-            <a href="#health-overview">产品健康</a>
-            <a href="#api-settings">API 设置</a>
-            <a href="#opening-settings">开场白</a>
-            <a href="#skill-settings">Skill 管理</a>
-            <a href="#invite-settings">邀请码</a>
-          </nav>
         </div>
 
         <section id="health-overview" class="admin-section">
@@ -419,7 +428,7 @@
           </form>
         </section>
 
-        <section class="admin-section prompt-section">
+        <section id="prompt-settings" class="admin-section prompt-section">
           <div class="section-heading">
             <div>
               <p class="eyebrow">SYSTEM PROMPTS</p>
@@ -529,6 +538,30 @@
             </table>
           </div>
         </section>
+        <section id="account-settings" class="admin-section" hidden>
+          <div class="section-heading"><div><p class="eyebrow">ACCOUNTS</p><h2>账号管理</h2>
+            <p>查看已注册用户名、旧邀请码账户和聊天活跃情况。口令与会话凭据不会显示。</p></div>
+            <button id="refresh-accounts" class="button button-secondary" type="button">刷新账号</button></div>
+          <form id="account-filter" class="admin-filter"><label for="account-search">搜索用户名或账户 ID</label>
+            <input id="account-search" type="search" placeholder="输入用户名或账户 ID">
+            <button class="button button-primary" type="submit">搜索</button></form>
+          <div class="admin-table-wrap"><table><thead><tr><th>用户名</th><th>账户 ID</th><th>状态</th><th>聊天数</th><th>最近聊天</th><th>注册时间</th><th>操作</th></tr></thead>
+            <tbody id="account-rows"></tbody></table></div>
+          <div id="account-pagination" class="admin-pagination"></div>
+        </section>
+        <section id="chat-settings" class="admin-section" hidden>
+          <div class="section-heading"><div><p class="eyebrow">CONVERSATIONS</p><h2>聊天记录</h2>
+            <p>成功返回的聊电影与推荐聊天保存在服务端。点击“查看”后才读取聊天原文。</p></div>
+            <button id="refresh-chats" class="button button-secondary" type="button">刷新记录</button></div>
+          <form id="chat-filter" class="admin-filter"><label for="chat-account">账户 ID</label>
+            <input id="chat-account" type="search" placeholder="按账户 ID 筛选；留空显示全部">
+            <button class="button button-primary" type="submit">筛选</button></form>
+          <div class="admin-table-wrap"><table><thead><tr><th>用户名 / 账户</th><th>类型</th><th>关联电影</th><th>消息数</th><th>创建时间</th><th>最近更新</th><th>操作</th></tr></thead>
+            <tbody id="chat-rows"></tbody></table></div>
+          <div id="chat-pagination" class="admin-pagination"></div>
+        </section>
+          </div>
+        </div>
       </section>
     </main>
 
@@ -543,8 +576,14 @@
       </div>
       <div id="invite-conversations-content" class="conversation-records" aria-live="polite"></div>
     </dialog>
+    <dialog id="chat-detail-dialog" class="admin-dialog">
+      <div class="admin-dialog-head"><div><p class="eyebrow">CHAT DETAIL</p><h2 id="chat-detail-title">聊天详情</h2>
+        <p id="chat-detail-meta"></p></div>
+        <button id="chat-detail-close" class="button button-secondary" type="button">关闭</button></div>
+      <div id="chat-detail-messages" class="conversation-records"></div>
+    </dialog>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/admin.js?v=20" defer></script>
+    <script src="/admin.js?v=22" defer></script>
   </body>
 </html>
