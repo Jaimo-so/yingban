@@ -655,6 +655,16 @@ class YingbanHandler(BaseHTTPRequestHandler):
             })
             return
 
+        if path == "/api/admin/feedback":
+            if not self._require_admin():
+                return
+            self._json(self.app.store.admin_feedback_page(
+                page=self._admin_page_number(query),
+                kind=(query.get("kind") or [""])[0],
+                source_page=(query.get("source_page") or [""])[0],
+            ))
+            return
+
         if path == "/api/admin/accounts":
             if not self._require_admin():
                 return
@@ -747,6 +757,20 @@ class YingbanHandler(BaseHTTPRequestHandler):
             payload = self._read_json(12_000_000 if path == "/api/voice/transcribe" else 1_000_000)
         except ValueError as error:
             self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/feedback":
+            account_id = self._require_user()
+            if not account_id:
+                return
+            try:
+                feedback = self.app.store.create_user_feedback(
+                    account_id, payload.get("kind"), payload.get("content"), payload.get("source_page"),
+                )
+            except ValueError as error:
+                self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+            self._json({"ok": True, "feedback": feedback}, HTTPStatus.CREATED)
             return
 
         if path == "/api/auth/login":

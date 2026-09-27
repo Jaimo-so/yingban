@@ -249,3 +249,8 @@ tbody tr:last-child td { border-bottom: 0; }
   .admin-filter label { flex-basis: 100%; }
   .admin-filter input { flex-basis: calc(100% - 95px); }
 }
+.feedback-filters { display: flex; flex-wrap: wrap; align-items: end; gap: 16px; margin: 20px 0; }
+.feedback-filters label { display: grid; gap: 8px; min-width: 150px; }
+.feedback-table { min-width: 800px; }
+.feedback-table td { white-space: pre-wrap; overflow-wrap: anywhere; vertical-align: top; }
+.feedback-table td:last-child { min-width: 260px; max-width: 540px; }

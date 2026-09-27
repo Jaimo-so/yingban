@@ -483,6 +483,18 @@ class Store:
                     updated_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS user_feedback (
+                    id TEXT PRIMARY KEY,
+                    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                    kind TEXT NOT NULL CHECK(kind IN ('problem', 'feature')),
+                    content TEXT NOT NULL CHECK(length(content) BETWEEN 1 AND 2000),
+                    source_page TEXT NOT NULL CHECK(source_page IN
+                        ('home', 'discussion', 'recommendation', 'history', 'onboarding')),
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_user_feedback_created
+                    ON user_feedback(created_at DESC, id DESC);
+
                 CREATE INDEX IF NOT EXISTS idx_invites_status
                     ON invite_codes(status);
                 CREATE INDEX IF NOT EXISTS idx_sessions_digest
@@ -1797,6 +1809,45 @@ class Store:
                  json.dumps(messages, ensure_ascii=False), now, now),
             )
         return clean_id
+
+    def create_user_feedback(
+        self, account_id: str, kind: str, content: str, source_page: str,
+    ) -> dict[str, Any]:
+        if not isinstance(kind, str) or kind not in {"problem", "feature"}:
+            raise ValueError("请选择问题反馈或功能建议")
+        if not isinstance(content, str) or "\x00" in content or not 1 <= len(content.strip()) <= 2000:
+            raise ValueError("请填写 1 至 2000 字的反馈内容")
+        if not isinstance(source_page, str) or source_page not in {
+            "home", "discussion", "recommendation", "history", "onboarding",
+        }:
+            raise ValueError("反馈来源页面无效，请重新打开反馈窗口")
+        item = {"id": "fb_" + secrets.token_hex(12), "account_id": account_id,
+                "kind": kind, "content": content.strip(), "source_page": source_page,
+                "created_at": utc_now()}
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO user_feedback (id, account_id, kind, content, source_page, created_at)
+                   VALUES (:id, :account_id, :kind, :content, :source_page, :created_at)""", item,
+            )
+        return {"id": item["id"], "created_at": item["created_at"]}
+
+    def admin_feedback_page(
+        self, page: int = 1, kind: str = "", source_page: str = "", page_size: int = 20,
+    ) -> dict[str, Any]:
+        page_size = min(100, max(1, page_size))
+        where = "WHERE (? = '' OR f.kind = ?) AND (? = '' OR f.source_page = ?)"
+        params = (kind, kind, source_page, source_page)
+        with self.connect() as connection:
+            total = connection.execute("SELECT COUNT(*) FROM user_feedback f " + where, params).fetchone()[0]
+            page = min(max(1, page), max(1, (total + page_size - 1) // page_size))
+            rows = connection.execute(
+                """SELECT f.*, c.username FROM user_feedback f
+                   LEFT JOIN account_credentials c ON c.account_id = f.account_id """
+                + where + " ORDER BY f.created_at DESC, f.id DESC LIMIT ? OFFSET ?",
+                (*params, page_size, (page - 1) * page_size),
+            ).fetchall()
+        return {"items": [dict(row) for row in rows], "total": total,
+                "page": page, "page_size": page_size}
 
     def admin_accounts_page(self, search: str = "", page: int = 1, page_size: int = 20) -> dict[str, Any]:
         page = max(1, page)

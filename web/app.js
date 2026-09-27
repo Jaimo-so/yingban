@@ -1877,6 +1877,55 @@ async function logout(clearDrafts) {
   showLogin();
 }
 
+const FEEDBACK_PAGES = { home: "此刻", discussion: "聊电影", recommendation: "选电影", history: "我的电影", onboarding: "首次选片" };
+let feedbackSource = "home";
+let feedbackSubmitting = false;
+$("#feedback-button").addEventListener("click", () => {
+  const view = $(".view:not([hidden])")?.id;
+  feedbackSource = view === "chat-view" ? state.mode : view?.replace(/-view$/, "");
+  if (!FEEDBACK_PAGES[feedbackSource]) feedbackSource = "home";
+  $("#feedback-source").textContent = `反馈来源：${FEEDBACK_PAGES[feedbackSource]}`;
+  $("#feedback-error").textContent = "";
+  $("#feedback-dialog").showModal();
+  $("#feedback-content").focus();
+});
+$("#feedback-content").addEventListener("input", () => {
+  $("#feedback-count").textContent = `${$("#feedback-content").value.length} / 2000`;
+});
+$("#feedback-dialog").addEventListener("cancel", (event) => {
+  if (feedbackSubmitting) event.preventDefault();
+});
+$("#feedback-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (feedbackSubmitting) return;
+  const content = $("#feedback-content").value.trim();
+  if (!content) {
+    $("#feedback-error").textContent = "请填写反馈内容";
+    $("#feedback-content").focus();
+    return;
+  }
+  feedbackSubmitting = true;
+  $("#feedback-error").textContent = "";
+  const controls = [...$("#feedback-dialog").querySelectorAll("button, select, textarea")];
+  controls.forEach((control) => { control.disabled = true; });
+  $("#feedback-submit").textContent = "正在提交…";
+  try {
+    await api("/api/feedback", { method: "POST", body: JSON.stringify({
+      kind: $("#feedback-kind").value, content, source_page: feedbackSource,
+    }) });
+    $("#feedback-form").reset();
+    $("#feedback-count").textContent = "0 / 2000";
+    $("#feedback-dialog").close();
+    showToast("反馈已收到，谢谢你帮助影伴变得更好。");
+  } catch (error) {
+    $("#feedback-error").textContent = error.message;
+  } finally {
+    feedbackSubmitting = false;
+    controls.forEach((control) => { control.disabled = false; });
+    $("#feedback-submit").textContent = "提交反馈";
+  }
+});
+
 $("#logout-button").addEventListener("click", () => $("#logout-dialog").showModal());
 $("#logout-keep-drafts").addEventListener("click", () => logout(false).catch((error) => showToast(error.message)));
 $("#logout-clear-drafts").addEventListener("click", () => logout(true).catch((error) => showToast(error.message)));

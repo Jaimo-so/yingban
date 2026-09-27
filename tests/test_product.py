@@ -834,7 +834,7 @@ class StageTenProductTests(ProductFixture):
         self.assertIn('state.skills = Array.isArray(me.skills) ? me.skills : state.skills;', script)
         self.assertIn('error.message === "请求的 Skill 不存在、已停用或不属于当前模块"', script)
         self.assertIn('body: JSON.stringify({ ...payload, skill_key: null })', script)
-        self.assertIn('/app.js?v=38', html)
+        self.assertIn('/app.js?v=39', html)
 
 
 class AgentConfigurationTests(ProductFixture):
@@ -1053,7 +1053,7 @@ class AgentConfigurationTests(ProductFixture):
             self.assertIn(base_url, admin_script)
         self.assertIn('const CUSTOM_BASE_URL = "__custom__"', admin_script)
         self.assertIn("全部厂家始终显示并按协议分组", admin_html)
-        self.assertIn('admin.js?v=22', admin_html)
+        self.assertIn('admin.js?v=23', admin_html)
 
     def test_stage_thirty_nine_admin_prompt_and_skill_management_use_name_selectors(self) -> None:
         admin_html = (PRODUCT_DIR / "web" / "admin.html").read_text(encoding="utf-8")
@@ -1071,8 +1071,8 @@ class AgentConfigurationTests(ProductFixture):
         self.assertIn("panel.hidden = panel.dataset.skillPanel !== skillKey", admin_script)
         self.assertIn("button.dataset.skillTarget = skill.skill_key", admin_script)
         self.assertIn(".management-selector.is-active", admin_css)
-        self.assertIn('/admin.css?v=19', admin_html)
-        self.assertIn('/admin.js?v=22', admin_html)
+        self.assertIn('/admin.css?v=20', admin_html)
+        self.assertIn('/admin.js?v=23', admin_html)
 
     def test_stage_forty_three_skill_editor_focuses_on_instructions(self) -> None:
         admin_html = (PRODUCT_DIR / "web" / "admin.html").read_text(encoding="utf-8")
@@ -1086,8 +1086,8 @@ class AgentConfigurationTests(ProductFixture):
         self.assertNotIn("skill-contract-grid", admin_script)
         self.assertIn("input_contract: inputContract", admin_script)
         self.assertIn("output_contract: outputContract", admin_script)
-        self.assertIn('/admin.css?v=19', admin_html)
-        self.assertIn('/admin.js?v=22', admin_html)
+        self.assertIn('/admin.css?v=20', admin_html)
+        self.assertIn('/admin.js?v=23', admin_html)
 
     def test_stage_forty_two_current_docs_match_server_chat_persistence(self) -> None:
         app_script = (PRODUCT_DIR / "web" / "app.js").read_text(encoding="utf-8")
@@ -1134,8 +1134,8 @@ class AgentConfigurationTests(ProductFixture):
         self.assertIn("function selectApiPanel(apiKey)", admin_script)
         self.assertIn("panel.hidden = panel.dataset.apiPanel !== apiKey", admin_script)
         self.assertIn(".api-selector-list .management-selector", admin_css)
-        self.assertIn('/admin.css?v=19', admin_html)
-        self.assertIn('/admin.js?v=22', admin_html)
+        self.assertIn('/admin.css?v=20', admin_html)
+        self.assertIn('/admin.js?v=23', admin_html)
 
     def test_model_manufacturer_picker_groups_all_protocols_and_switches_automatically(self) -> None:
         admin_html = (PRODUCT_DIR / "web" / "admin.html").read_text(encoding="utf-8")
@@ -1480,7 +1480,7 @@ class IntegrationConfigurationTests(ProductFixture):
         self.assertIn('status === "unavailable"', components)
         content = json.loads((PRODUCT_DIR / "web" / "ui-content.json").read_text(encoding="utf-8"))
         self.assertEqual(content["search"]["unavailable"], "电影搜索服务暂时不可用，请稍后重试。")
-        self.assertLess(html.index('/movie-components.js?v=2'), html.index('/app.js?v=38'))
+        self.assertLess(html.index('/movie-components.js?v=2'), html.index('/app.js?v=39'))
 
     def test_tmdb_result_is_persisted_with_a_real_poster_url(self) -> None:
         internet = InternetRuntime(self.settings, self.store)
@@ -2475,8 +2475,8 @@ class ProductSkillTests(ProductFixture):
         )
         self.assertIn(".weekly-movie > div:not(.poster)", styles)
         self.assertNotIn(".weekly-movie > div {", styles)
-        self.assertIn('/styles.css?v=27', html)
-        self.assertIn('/app.js?v=38', html)
+        self.assertIn('/styles.css?v=29', html)
+        self.assertIn('/app.js?v=39', html)
 
 
 class HTTPFlowTests(ProductFixture):
@@ -2514,6 +2514,81 @@ class HTTPFlowTests(ProductFixture):
         result = self.request("/api/auth/login", "POST", {"invite_code": code})
         self.assertTrue(result["ok"])
         return code
+
+    def test_feedback_is_authenticated_and_source_is_bound_to_session(self) -> None:
+        payload = {"kind": "problem", "content": "播放时没有声音", "source_page": "discussion"}
+        self.assertEqual(self.client.post("/api/feedback", json=payload).status_code, 401)
+        self.assertEqual(self.client.get("/api/admin/feedback").status_code, 401)
+        self.request("/api/auth/register", "POST", {
+            "username": "feedback_viewer", "password": "long-password-123",
+        })
+        response = self.client.post("/api/feedback", json={**payload, "account_id": "forged-user"})
+        self.assertEqual(response.status_code, 201)
+        feedback_id = response.json()["feedback"]["id"]
+        self.assertEqual(self.client.get("/api/admin/feedback").status_code, 401)
+        self.request("/api/admin/login", "POST", {"admin_token": "test-admin-token"})
+        item = self.request("/api/admin/feedback")["items"][0]
+        self.assertEqual(item["id"], feedback_id)
+        self.assertEqual(item["username"], "feedback_viewer")
+        self.assertNotEqual(item["account_id"], "forged-user")
+        self.assertEqual(item["source_page"], "discussion")
+        self.assertEqual(item["content"], payload["content"])
+        self.assertEqual(set(item), {"id", "account_id", "username", "kind", "content", "source_page", "created_at"})
+        self.request("/api/auth/logout", "POST", {})
+        self.assertEqual(self.client.post("/api/feedback", json=payload).status_code, 401)
+
+    def test_feedback_rejects_invalid_fields_without_storing_them(self) -> None:
+        self.login()
+        valid = {"kind": "feature", "content": "支持片单导出", "source_page": "history"}
+        for field, values in {
+            "kind": [None, [], "other"],
+            "content": [None, {}, "   ", "字" * 2001, "\x00"],
+            "source_page": [None, [], "https://example.com/?token=secret", "unknown"],
+        }.items():
+            for value in values:
+                with self.subTest(field=field, value=str(value)[:30]):
+                    self.assertEqual(self.client.post("/api/feedback", json={**valid, field: value}).status_code, 400)
+        self.assertEqual(self.store.admin_feedback_page()["total"], 0)
+        response = self.client.post("/api/feedback", json={**valid, "content": "字" * 2000})
+        self.assertEqual(response.status_code, 201)
+
+    def test_feedback_filters_pagination_and_complete_content(self) -> None:
+        self.login()
+        sources = ["home", "discussion", "recommendation", "history", "onboarding"]
+        for index in range(23):
+            self.request("/api/feedback", "POST", {
+                "kind": "problem" if index % 2 else "feature",
+                "content": f"建议 {index}\n<script>alert('test')</script>",
+                "source_page": sources[index % 5],
+            })
+        self.request("/api/admin/login", "POST", {"admin_token": "test-admin-token"})
+        first = self.request("/api/admin/feedback")
+        second = self.request("/api/admin/feedback?page=2")
+        self.assertEqual(first["total"], 23)
+        self.assertEqual(len(first["items"]), 20)
+        self.assertEqual(len(second["items"]), 3)
+        self.assertFalse({i["id"] for i in first["items"]} & {i["id"] for i in second["items"]})
+        self.assertTrue(first["items"][0]["content"].startswith("建议 22\n<script>"))
+        filtered = self.request("/api/admin/feedback?kind=feature&source_page=home")
+        self.assertEqual(filtered["total"], 3)
+        self.assertTrue(all(i["kind"] == "feature" and i["source_page"] == "home" for i in filtered["items"]))
+        self.assertEqual(self.request("/api/admin/feedback?source_page=missing")["total"], 0)
+        self.assertEqual(self.request("/api/admin/feedback?page=999")["page"], 2)
+
+    def test_feedback_schema_upgrade_and_restart_preserve_existing_data(self) -> None:
+        self.login()
+        with self.store.connect() as connection:
+            accounts_before = [dict(row) for row in connection.execute("SELECT * FROM accounts")]
+            connection.execute("DROP TABLE user_feedback")
+        self.store.initialize()
+        response = self.request("/api/feedback", "POST", {
+            "kind": "feature", "content": "新增筛选", "source_page": "recommendation",
+        })
+        reopened = Store(self.settings.database_path, self.settings.invite_pepper, self.settings.session_secret)
+        self.assertEqual(reopened.admin_feedback_page()["items"][0]["id"], response["feedback"]["id"])
+        with reopened.connect() as connection:
+            self.assertEqual([dict(row) for row in connection.execute("SELECT * FROM accounts")], accounts_before)
+            self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
 
     def test_admin_accounts_and_all_chat_modes_are_private_and_complete(self) -> None:
         self.request("/api/auth/register", "POST", {

@@ -6,8 +6,8 @@
     <meta name="robots" content="noindex, nofollow">
     <title>影伴 · 管理后台</title>
     <script src="/brand.js?v=1" defer></script>
-    <link rel="stylesheet" href="/styles.css?v=27">
-    <link rel="stylesheet" href="/admin.css?v=19">
+    <link rel="stylesheet" href="/styles.css?v=29">
+    <link rel="stylesheet" href="/admin.css?v=20">
   </head>
   <body class="admin-body">
     <header class="admin-topbar">
@@ -39,6 +39,7 @@
               <a href="#health-overview" data-icon="◫">产品健康</a>
               <a href="#account-settings" data-icon="♙">账号管理</a>
               <a href="#chat-settings" data-icon="☷">聊天记录</a>
+              <a href="#feedback-settings" data-icon="✉">用户反馈</a>
               <a href="#api-settings" data-icon="◇">API 设置</a>
               <a href="#opening-settings" data-icon="✎">开场白</a>
               <a href="#prompt-settings" data-icon="≡">Agent 提示词</a>
@@ -93,6 +94,23 @@
               <div class="form-actions"><button class="button button-primary" type="submit">保存价格表</button></div>
             </form>
           </div>
+        </section>
+
+        <section id="feedback-settings" class="admin-section" hidden>
+          <div class="section-heading">
+            <div><h2>用户反馈</h2><p>查看用户遇到的问题和功能建议，以及每条反馈的用户与来源页面。</p></div>
+            <button id="refresh-feedback" class="button button-secondary" type="button">刷新反馈</button>
+          </div>
+          <form id="feedback-filter-form" class="feedback-filters">
+            <label for="feedback-filter-kind">反馈类型<select id="feedback-filter-kind"><option value="">全部类型</option><option value="problem">问题反馈</option><option value="feature">功能建议</option></select></label>
+            <label for="feedback-filter-source">来源页面<select id="feedback-filter-source"><option value="">全部页面</option><option value="home">此刻</option><option value="discussion">聊电影</option><option value="recommendation">选电影</option><option value="history">我的电影</option><option value="onboarding">首次选片</option></select></label>
+            <button class="button button-secondary" type="submit">筛选</button>
+          </form>
+          <p id="feedback-list-message" role="status"></p>
+          <div class="admin-table-wrap">
+            <table class="feedback-table"><thead><tr><th>提交时间</th><th>反馈用户</th><th>来源页面</th><th>类型</th><th>反馈内容</th></tr></thead><tbody id="feedback-rows"></tbody></table>
+          </div>
+          <div id="feedback-pagination" class="admin-pagination"></div>
         </section>
 
         <section id="api-settings" class="admin-section api-section">
@@ -584,6 +602,6 @@
     </dialog>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/admin.js?v=22" defer></script>
+    <script src="/admin.js?v=23" defer></script>
   </body>
 </html>

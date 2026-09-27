@@ -11,7 +11,7 @@
       }
     </script>
     <script src="/brand.js?v=1" defer></script>
-    <link rel="stylesheet" href="/styles.css?v=27">
+    <link rel="stylesheet" href="/styles.css?v=29">
   </head>
   <body>
     <div class="film-grain" aria-hidden="true"></div>
@@ -88,6 +88,7 @@
           <button class="nav-link" data-nav="history" type="button">我的电影 <span id="watched-count" class="count-badge">0</span></button>
         </nav>
         <div class="account-actions">
+          <button id="feedback-button" class="feedback-button" type="button" aria-haspopup="dialog" aria-controls="feedback-dialog">反馈</button>
           <button id="logout-button" class="icon-button" type="button" title="退出登录" aria-label="退出登录">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17l5-5-5-5M15 12H3M14 3h5a2 2 0 012 2v14a2 2 0 01-2 2h-5"/></svg>
           </button>
@@ -255,8 +256,10 @@
               <h1>我的电影</h1>
               <p>这不是一份考勤表，只是让我们下次聊起时不会从头认识。</p>
             </div>
-            <button id="add-movie-button" class="button button-secondary" type="button">＋ 添加电影</button>
-            <button id="monthly-recap-button" class="button button-secondary" type="button">本月电影回顾</button>
+            <div class="history-actions">
+              <button id="add-movie-button" class="button button-secondary" type="button">＋ 添加电影</button>
+              <button id="monthly-recap-button" class="button button-secondary" type="button">本月电影回顾</button>
+            </div>
           </div>
           <div class="history-tabs" role="tablist" aria-label="电影状态">
             <button class="history-tab is-active" data-state="watched" role="tab" type="button">看过</button>
@@ -273,6 +276,25 @@
         </section>
       </main>
     </div>
+
+    <dialog id="feedback-dialog" class="utility-dialog" aria-labelledby="feedback-title" aria-describedby="feedback-description">
+      <form method="dialog" class="dialog-head">
+        <div><span class="eyebrow">一起让影伴更好</span><h2 id="feedback-title">问题与建议</h2></div>
+        <button class="icon-button" type="submit" aria-label="关闭反馈">×</button>
+      </form>
+      <form id="feedback-form">
+        <div class="utility-dialog-body">
+          <p id="feedback-description">遇到了问题，或希望增加什么功能？告诉我们。</p>
+          <label for="feedback-kind">反馈类型</label>
+          <select id="feedback-kind" required><option value="problem">问题反馈</option><option value="feature">功能建议</option></select>
+          <label for="feedback-content">具体内容</label>
+          <textarea id="feedback-content" rows="6" maxlength="2000" required placeholder="例如：在哪一步遇到了什么问题，或你希望怎样使用新功能。" aria-describedby="feedback-source feedback-count"></textarea>
+          <div class="feedback-meta"><span id="feedback-source"></span><span id="feedback-count">0 / 2000</span></div>
+          <p id="feedback-error" class="form-error" role="alert"></p>
+        </div>
+        <div class="dialog-actions"><button id="feedback-submit" class="button button-primary" type="submit">提交反馈</button></div>
+      </form>
+    </dialog>
 
     <dialog id="movie-dialog" class="movie-dialog">
       <form method="dialog" class="dialog-head">
@@ -495,6 +517,6 @@
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <script src="/ui-content.js?v=1" defer></script>
     <script src="/movie-components.js?v=2" defer></script>
-    <script src="/app.js?v=38" defer></script>
+    <script src="/app.js?v=39" defer></script>
   </body>
 </html>

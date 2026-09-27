@@ -794,7 +794,7 @@ function showDashboardShell() {
 }
 
 const ADMIN_MODULES = [
-  "health-overview", "account-settings", "chat-settings", "api-settings",
+  "health-overview", "account-settings", "chat-settings", "feedback-settings", "api-settings",
   "opening-settings", "prompt-settings", "skill-settings", "invite-settings",
 ];
 let accountPage = 1;
@@ -815,6 +815,7 @@ function activateModule(requested) {
   document.title = `${heading} · 影伴管理台`;
   if (id === "account-settings") loadAccounts().catch((error) => toast(error.message));
   if (id === "chat-settings") loadChats().catch((error) => toast(error.message));
+  if (id === "feedback-settings") loadFeedback();
   window.scrollTo({ top: 0 });
 }
 
@@ -835,6 +836,39 @@ function tableCell(value) {
   cell.textContent = value == null || value === "" ? "—" : String(value);
   return cell;
 }
+
+let feedbackPage = 1;
+let feedbackLoadVersion = 0;
+async function loadFeedback(page = feedbackPage) {
+  const version = ++feedbackLoadVersion;
+  const message = $("#feedback-list-message");
+  message.textContent = "正在加载反馈…";
+  $("#feedback-rows").replaceChildren();
+  $("#feedback-pagination").replaceChildren();
+  const params = new URLSearchParams({ page: String(page),
+    kind: $("#feedback-filter-kind").value, source_page: $("#feedback-filter-source").value });
+  try {
+    const data = await api(`/api/admin/feedback?${params}`);
+    if (version !== feedbackLoadVersion) return;
+    feedbackPage = data.page;
+    const pages = { home: "此刻", discussion: "聊电影", recommendation: "选电影", history: "我的电影", onboarding: "首次选片" };
+    const rows = data.items.map((item) => {
+      const row = document.createElement("tr");
+      row.append(tableCell(dateText(item.created_at)),
+        tableCell(`${item.username || "未设置用户名"}\n${item.account_id}`),
+        tableCell(`${pages[item.source_page] || item.source_page}\n/#${item.source_page}`),
+        tableCell(item.kind === "problem" ? "问题反馈" : "功能建议"), tableCell(item.content));
+      return row;
+    });
+    $("#feedback-rows").replaceChildren(...rows);
+    message.textContent = data.total ? "" : "暂无符合条件的反馈";
+    renderPageControls("#feedback-pagination", data, loadFeedback);
+  } catch (error) {
+    if (version === feedbackLoadVersion) message.textContent = `加载失败：${error.message}，请点击刷新反馈重试。`;
+  }
+}
+$("#feedback-filter-form").addEventListener("submit", (event) => { event.preventDefault(); loadFeedback(1); });
+$("#refresh-feedback").addEventListener("click", () => loadFeedback());
 
 async function loadAccounts(page = accountPage) {
   const search = $("#account-search").value.trim();
