@@ -22,7 +22,7 @@ export default function ProductLayout({ children }: { children: ReactNode }) {
               'if(window.location.protocol==="file:"){window.location.replace("http://127.0.0.1:8765/")}',
           }}
         />
-        <link rel="stylesheet" href="/styles.css?v=29" />
+        <link rel="stylesheet" href="/styles.css?v=30" />
       </head>
       <body>{children}</body>
     </html>

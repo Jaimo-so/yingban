@@ -42,6 +42,7 @@ const state = {
   reflectionMovie: null,
   reflectionTrigger: null,
   reflectionBundle: null,
+  reflectionPreferConfirmed: false,
   onboardingStatus: "not_started",
   onboardingSelected: [],
   tasteProfile: null,
@@ -236,6 +237,7 @@ function showAuthenticated(me) {
   $("#login-view").hidden = true;
   $("#app-shell").hidden = false;
   $("#watched-count").textContent = me.account?.watched_count ?? 0;
+  renderProfileEntry(me.account);
   state.accountHint = me.account?.storage_hint || me.account?.id_hint || "account";
   localConversationStore.migrateLegacyDrafts();
   state.openings = { ...state.openings, ...(me.openings || {}) };
@@ -253,6 +255,9 @@ function showLogin() {
   navigationVersion += 1;
   state.mode = null;
   state.authenticated = false;
+  profileLoadVersion += 1;
+  personalHome = null;
+  $("#profile-content").hidden = true;
   $("#login-view").hidden = false;
   $("#app-shell").hidden = true;
   showAuthMode("login");
@@ -290,7 +295,7 @@ function restoreLocation() {
   navigationVersion += 1;
   localConversationStore.writeCurrent($("#chat-input")?.value || "");
   state.returnToChatFromHistory = false;
-  if (state.onboardingStatus !== "completed") {
+  if (state.onboardingStatus !== "completed" && window.location.hash !== "#profile") {
     openOnboarding({ replace: true });
     return;
   }
@@ -300,12 +305,12 @@ function restoreLocation() {
     else openChat(route, null, { replace: true });
     return;
   }
-  navigate(route === "history" ? "history" : "home", { replace: true });
+  navigate(["history", "profile"].includes(route) ? route : "home", { replace: true });
 }
 
 function navigate(view, options = {}) {
   navigationVersion += 1;
-  if (state.onboardingStatus !== "completed" && view !== "onboarding") view = "onboarding";
+  if (state.onboardingStatus !== "completed" && !["onboarding", "profile"].includes(view)) view = "onboarding";
   if (!$("#chat-view").hidden && view !== "chat") {
     localConversationStore.writeCurrent($("#chat-input")?.value || "");
   }
@@ -316,6 +321,8 @@ function navigate(view, options = {}) {
     state.historyCursor = 0;
     loadHistory();
   }
+  $("#profile-entry").setAttribute("aria-current", view === "profile" ? "page" : "false");
+  if (view === "profile") void loadPersonalHome();
   if (view === "home") loadDailyBoxOffice();
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
@@ -478,11 +485,17 @@ async function openTasteProfile() {
     correct.className = "text-button";
     correct.textContent = "这条不准，移除结论";
     correct.addEventListener("click", async () => {
-      await api("/api/taste-profile/corrections", {
-        method: "POST",
-        body: JSON.stringify({ dimension_id: dimension.id }),
-      });
-      await openTasteProfile();
+      correct.disabled = true;
+      try {
+        await api("/api/taste-profile/corrections", {
+          method: "POST",
+          body: JSON.stringify({ dimension_id: dimension.id }),
+        });
+        await openTasteProfile();
+      } catch (error) {
+        showToast(error.message);
+        correct.disabled = false;
+      }
     });
     card.append(head, evidence, correct);
     return card;
@@ -1178,6 +1191,7 @@ async function refreshMe() {
   const me = await api("/api/me");
   applyVoiceAvailability(Boolean(me.voice_available));
   if (me.authenticated) {
+    renderProfileEntry(me.account);
     $("#watched-count").textContent = me.account.watched_count;
     state.skills = Array.isArray(me.skills) ? me.skills : state.skills;
     renderSkillToolbar();
@@ -1402,6 +1416,8 @@ async function loadHistory(append = false) {
     state.historyNextCursor = data.next_cursor;
     $("#history-load-more").hidden = data.next_cursor === null;
     empty.hidden = data.total > 0;
+    $("#history-empty h2").textContent = state.historyState === "reflections" ? "还没有保存的观后感" : "这里还没有电影";
+    $("#history-empty p").textContent = state.historyState === "reflections" ? "聊完电影，确认保存的观后感会留在这里。" : "聊完一部，或者手动加进来，它就会留在这里。";
   } catch (error) {
     grid.replaceChildren();
     empty.hidden = false;
@@ -1414,11 +1430,11 @@ async function loadHistory(append = false) {
 
 function historyItem(movie) {
   const movieId = movie.id || movie.movie_id;
-  const conversations = state.historyState === "watched" ? localConversationStore.listForMovie(movieId) : [];
+  const conversations = ["watched", "reflections"].includes(state.historyState) ? localConversationStore.listForMovie(movieId) : [];
   return historyCard(movie, {
-    historyState: state.historyState,
+    historyState: state.historyState === "reflections" ? "watched" : state.historyState,
     conversationCount: conversations.length,
-    onOpenReflection: (button) => openReflection(movie, button),
+    onOpenReflection: (button) => openReflection(movie, button, state.historyState === "reflections"),
     onError: (error) => showToast(error.message),
     actions: {
       keep: () => followUpWatchlist(movie, "keep"),
@@ -1455,8 +1471,9 @@ async function followUpWatchlist(movie, action) {
   await Promise.all([loadHistory(), refreshMe()]);
 }
 
-async function openReflection(movie, trigger) {
+async function openReflection(movie, trigger, preferConfirmed = false) {
   state.reflectionMovie = movie;
+  state.reflectionPreferConfirmed = preferConfirmed;
   state.reflectionTrigger = trigger;
   $("#reflection-title").textContent = `《${movie.title_zh}》观后感`;
   $("#reflection-meta").textContent = [movie.year, ...(movie.genres || []).slice(0, 3)].filter(Boolean).join(" · ");
@@ -1475,6 +1492,9 @@ async function openReflection(movie, trigger) {
 }
 
 function renderReflectionBundle() {
+  if (state.reflectionPreferConfirmed && state.reflectionBundle?.confirmed) {
+    state.reflectionBundle.current = state.reflectionBundle.confirmed;
+  }
   const current = state.reflectionBundle?.current;
   const note = String(current?.content || "");
   $("#reflection-note").value = note;
@@ -1508,6 +1528,7 @@ async function generateReflection(movie = state.reflectionMovie) {
   await pollJob(data.job.id, async () => {
     const bundle = await api(`/api/reflections/${encodeURIComponent(movieId)}`);
     state.reflectionBundle = bundle;
+    state.reflectionPreferConfirmed = false;
     showToast("新的 AI 观后感草稿已生成，确认前不会成为正式版本");
     if (!$("#reflection-dialog").open) await openReflection(movie, null);
     else renderReflectionBundle();
@@ -2109,6 +2130,8 @@ $("#reflection-continue").addEventListener("click", () => {
 $("#reflection-dialog").addEventListener("close", () => {
   if (state.reflectionTrigger?.isConnected) state.reflectionTrigger.focus();
   state.reflectionTrigger = null;
+  if (!$("#profile-view").hidden) void loadPersonalHome();
+  if (!$("#history-view").hidden && state.historyState === "reflections") void loadHistory();
 });
 $("#hold-to-talk").addEventListener("pointerdown", (event) => {
   event.preventDefault();
@@ -2153,8 +2176,7 @@ $("#chat-input").addEventListener("keydown", (event) => {
 });
 
 $$(".history-tab").forEach((tab) => tab.addEventListener("click", () => {
-  state.historyState = tab.dataset.state;
-  $$(".history-tab").forEach((item) => item.classList.toggle("is-active", item === tab));
+  setHistoryState(tab.dataset.state);
   loadHistory();
 }));
 $("#history-load-more").addEventListener("click", () => loadHistory(true));
@@ -2258,6 +2280,173 @@ $("#movie-search-form").addEventListener("submit", async (event) => {
     submit.disabled = false;
     submit.textContent = uiText("search.submit");
   }
+});
+
+const PROFILE_AVATARS = { ticket: "映", screen: "幕", moon: "月", flower: "花" };
+let personalHome = null;
+let profileLoadVersion = 0;
+
+function renderProfileEntry(profile = {}) {
+  const key = Object.hasOwn(PROFILE_AVATARS, profile.avatar_key) ? profile.avatar_key : "ticket";
+  $("#profile-entry-avatar").dataset.avatar = key;
+  $("#profile-entry-avatar").textContent = PROFILE_AVATARS[key];
+  $("#profile-entry-name").textContent = profile.nickname || "我的主页";
+}
+
+function renderPersonalHome(data) {
+  personalHome = data;
+  const profile = data.profile;
+  renderProfileEntry(profile);
+  const key = Object.hasOwn(PROFILE_AVATARS, profile.avatar_key) ? profile.avatar_key : "ticket";
+  $("#profile-avatar").dataset.avatar = key;
+  $("#profile-avatar").textContent = PROFILE_AVATARS[key];
+  $("#profile-title").textContent = profile.nickname || "我的主页";
+  $("#profile-bio").textContent = profile.bio || "还没写下简介。可以从一句喜欢的电影台词开始。";
+  $("#profile-account-id").textContent = `影伴 ID · ${profile.id}`;
+  $("#profile-login-account").textContent = state.localOpenAccess ? `本机账户 · ID ${profile.id}`
+    : profile.username ? `登录用户名：${profile.username} · 昵称修改不影响登录` : `邀请码账户 · ID ${profile.id}`;
+  $("#profile-logout").hidden = state.localOpenAccess;
+  for (const key of ["watched", "watchlist", "reflections"]) $("#profile-" + key).textContent = data.stats[key];
+  state.autoGenerateReflectionDrafts = data.auto_generate_drafts;
+  $("#profile-auto-drafts").checked = data.auto_generate_drafts;
+  $("#reflection-auto-generate").checked = data.auto_generate_drafts;
+  const taste = data.taste;
+  $("#profile-taste-summary").textContent = taste.taste_summary || "我们还没有聊起你的口味。选几部看过的电影，让阿映从具体的故事认识你。";
+  $("#profile-taste-tags").replaceChildren(...(taste.taste_dimensions || []).filter((item) => !item.hidden).map((item) => {
+    const tag = document.createElement("span");
+    tag.textContent = `${item.direction === "avoid" ? "暂时避开 · " : ""}${item.label}`;
+    return tag;
+  }));
+  $("#profile-taste-details").hidden = !taste.taste_version;
+  $("#profile-taste-start").hidden = Boolean(taste.taste_version);
+  const records = data.recent_records.map((record) => {
+    const article = document.createElement("article");
+    article.className = "profile-record";
+    const meta = document.createElement("span");
+    meta.className = "profile-record-meta";
+    meta.textContent = `${new Date(record.updated_at).toLocaleDateString("zh-CN")} · 已保存的观后感`;
+    const title = document.createElement("h3");
+    title.textContent = `《${record.title_zh}》`;
+    const excerpt = document.createElement("p");
+    excerpt.textContent = record.excerpt;
+    const button = actionButton("打开记录 →", (trigger) => openReflection({ id: record.movie_id, title_zh: record.title_zh, year: record.year }, trigger, true), {
+      className: "text-button", ariaLabel: `打开《${record.title_zh}》的观后感`, onError: (error) => showToast(error.message),
+    });
+    article.append(meta, title, excerpt, button);
+    return article;
+  });
+  if (!records.length) {
+    const empty = document.createElement("div");
+    empty.className = "profile-record-empty";
+    const title = document.createElement("strong");
+    title.textContent = "留一句散场后的感受";
+    const description = document.createElement("p");
+    description.textContent = "你确认保存的观后感会出现在这里。从刚看完的一部电影聊起就好。";
+    empty.append(title, description, actionButton("聊聊看过的电影 →", () => openChat("discussion"), {className: "text-button", onError: (error) => showToast(error.message)}));
+    records.push(empty);
+  }
+  $("#profile-record-list").replaceChildren(...records);
+}
+
+async function loadPersonalHome() {
+  const version = ++profileLoadVersion;
+  $("#profile-content").hidden = true;
+  $("#profile-retry").hidden = true;
+  $("#profile-status").textContent = "正在翻开你的电影档案…";
+  $("#profile-view").setAttribute("aria-busy", "true");
+  $("#profile-form").hidden = true;
+  $("#profile-preference-status").textContent = "";
+  $("#profile-edit").setAttribute("aria-expanded", "false");
+  try {
+    const data = await api("/api/profile");
+    if (version !== profileLoadVersion || !state.authenticated) return;
+    renderPersonalHome(data);
+    $("#profile-status").textContent = "";
+    $("#profile-content").hidden = false;
+  } catch (error) {
+    if (version !== profileLoadVersion || !state.authenticated) return;
+    $("#profile-status").textContent = `暂时没能读取个人主页。${error.message}`;
+    $("#profile-retry").hidden = false;
+  } finally {
+    if (version === profileLoadVersion) $("#profile-view").removeAttribute("aria-busy");
+  }
+}
+
+function closeProfileEditor() {
+  $("#profile-form").hidden = true;
+  $("#profile-edit").setAttribute("aria-expanded", "false");
+  $("#profile-edit").focus();
+}
+
+function setHistoryState(value) {
+  state.historyState = value;
+  $$(".history-tab").forEach((item) => {
+    const active = item.dataset.state === value;
+    item.classList.toggle("is-active", active);
+    item.setAttribute("aria-selected", String(active));
+  });
+}
+
+$("#profile-back").addEventListener("click", () => navigatePrimary("home"));
+$("#profile-retry").addEventListener("click", loadPersonalHome);
+$("#profile-edit").addEventListener("click", () => {
+  if (!$("#profile-form").hidden) { closeProfileEditor(); return; }
+  const profile = personalHome.profile;
+  $("#profile-nickname").value = profile.nickname;
+  $("#profile-bio-input").value = profile.bio;
+  $$('#profile-form input[name="avatar_key"]').forEach((radio) => { radio.checked = radio.value === profile.avatar_key; });
+  $("#profile-save-error").textContent = "";
+  $("#profile-form").hidden = false;
+  $("#profile-edit").setAttribute("aria-expanded", "true");
+  $("#profile-nickname").focus();
+});
+$("#profile-cancel").addEventListener("click", closeProfileEditor);
+$("#profile-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const controls = [...event.currentTarget.elements];
+  const account = state.accountHint;
+  const payload = { nickname: $("#profile-nickname").value.trim(), bio: $("#profile-bio-input").value.trim(),
+    avatar_key: $('#profile-form input[name="avatar_key"]:checked').value };
+  controls.forEach((control) => { control.disabled = true; });
+  $("#profile-save-error").textContent = "";
+  $("#profile-save").textContent = "正在保存…";
+  try {
+    const data = await api("/api/profile", { method: "POST", body: JSON.stringify(payload) });
+    if (!state.authenticated || account !== state.accountHint) return;
+    renderPersonalHome({ ...personalHome, profile: data.profile });
+    closeProfileEditor();
+    showToast("个人资料已保存");
+  } catch (error) {
+    $("#profile-save-error").textContent = error.message;
+  } finally {
+    controls.forEach((control) => { control.disabled = false; });
+    $("#profile-save").textContent = "保存资料";
+  }
+});
+$$('[data-profile-history]').forEach((button) => button.addEventListener("click", () => {
+  setHistoryState(button.dataset.profileHistory);
+  navigatePrimary("history");
+}));
+$("#profile-taste-details").addEventListener("click", () => openTasteProfile().catch((error) => showToast(error.message)));
+$("#profile-taste-start").addEventListener("click", () => openOnboarding().catch((error) => showToast(error.message)));
+$("#profile-logout").addEventListener("click", () => $("#logout-dialog").showModal());
+$("#profile-auto-drafts").addEventListener("change", async (event) => {
+  const input = event.target;
+  input.disabled = true;
+  $("#profile-preference-status").textContent = "正在保存…";
+  try {
+    const data = await api("/api/reflection-preferences", { method: "POST", body: JSON.stringify({auto_generate_drafts: input.checked}) });
+    state.autoGenerateReflectionDrafts = data.auto_generate_drafts;
+    personalHome.auto_generate_drafts = data.auto_generate_drafts;
+    $("#reflection-auto-generate").checked = data.auto_generate_drafts;
+    $("#profile-preference-status").textContent = "设置已保存";
+  } catch (error) {
+    input.checked = state.autoGenerateReflectionDrafts;
+    $("#profile-preference-status").textContent = error.message;
+  } finally { input.disabled = false; }
+});
+$("#taste-dialog").addEventListener("close", () => {
+  if (!$("#profile-view").hidden) void loadPersonalHome();
 });
 
 boot();

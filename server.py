@@ -398,6 +398,7 @@ class YingbanHandler(BaseHTTPRequestHandler):
                 return
             watched_count = len(self.app.store.watched_ids(account_id))
             profile = self.app.store.account_profile(account_id)
+            personal = self.app.store.personal_profile(account_id)
             selected_count = len(self.app.store.onboarding_movies(account_id))
             self._json(
                 {
@@ -407,6 +408,8 @@ class YingbanHandler(BaseHTTPRequestHandler):
                         "id_hint": account_id,
                         "storage_hint": self.app.store.account_storage_hint(account_id),
                         "watched_count": watched_count,
+                        "nickname": personal.get("nickname", ""),
+                        "avatar_key": personal.get("avatar_key", "ticket"),
                     },
                     "demo_mode": self.app.agent.model_config().demo_mode,
                     "openings": self.app.agent.openings(),
@@ -579,6 +582,11 @@ class YingbanHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if path == "/api/profile":
+            account_id = self._require_user()
+            if account_id:
+                self._json(self.app.store.personal_home(account_id))
+            return
         if path == "/api/taste-profile":
             account_id = self._require_user()
             if not account_id:
@@ -607,7 +615,7 @@ class YingbanHandler(BaseHTTPRequestHandler):
             if not account_id:
                 return
             state = query.get("state", [None])[0]
-            if state not in {None, "watched", "watchlist", "disliked"}:
+            if state not in {None, "watched", "watchlist", "disliked", "reflections"}:
                 self._json({"error": "invalid state"}, HTTPStatus.BAD_REQUEST)
                 return
             try:
@@ -835,6 +843,17 @@ class YingbanHandler(BaseHTTPRequestHandler):
             self.app.store.record_model_usage(
                 "taste_profile", "deterministic", "evidence-profile-v1", True, 0, account_id
             )
+            self._json({"ok": True, "profile": profile})
+            return
+        if path == "/api/profile":
+            account_id = self._require_user()
+            if not account_id:
+                return
+            try:
+                profile = self.app.store.update_personal_profile(account_id, payload)
+            except ValueError as error:
+                self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
             self._json({"ok": True, "profile": profile})
             return
         if path == "/api/taste-profile/corrections":

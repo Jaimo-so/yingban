@@ -11,7 +11,7 @@
       }
     </script>
     <script src="/brand.js?v=1" defer></script>
-    <link rel="stylesheet" href="/styles.css?v=29">
+    <link rel="stylesheet" href="/styles.css?v=30">
   </head>
   <body>
     <div class="film-grain" aria-hidden="true"></div>
@@ -79,10 +79,16 @@
 
     <div id="app-shell" class="app-shell" hidden>
       <header class="topbar">
+        <div class="brand-area">
         <button id="brand-home" class="brand brand-button" type="button" aria-label="返回影伴首页">
           <yingban-icon class="brand-mark" aria-hidden="true"></yingban-icon>
           <span>影伴</span>
         </button>
+        <button id="profile-entry" class="profile-entry" data-nav="profile" type="button" aria-label="打开我的主页">
+          <span id="profile-entry-avatar" class="profile-avatar" data-avatar="ticket" aria-hidden="true">映</span>
+          <span id="profile-entry-name">我的主页</span>
+        </button>
+        </div>
         <nav aria-label="主要导航">
           <button class="nav-link is-active" data-nav="home" type="button">此刻</button>
           <button class="nav-link" data-nav="history" type="button">我的电影 <span id="watched-count" class="count-badge">0</span></button>
@@ -249,6 +255,59 @@
           </div>
         </section>
 
+        <section id="profile-view" class="view profile-view" hidden aria-labelledby="profile-title">
+          <div class="profile-topline"><button id="profile-back" class="text-button" type="button">← 回到此刻</button><span>我的电影档案 · 仅自己可见</span></div>
+          <p id="profile-status" role="status" aria-live="polite"></p>
+          <button id="profile-retry" class="button button-secondary" type="button" hidden>重新加载</button>
+          <div id="profile-content" hidden>
+            <header class="profile-identity">
+              <span id="profile-avatar" class="profile-avatar profile-avatar-large" data-avatar="ticket" aria-hidden="true">映</span>
+              <div class="profile-intro"><p class="eyebrow">电影散场，故事留下</p><h1 id="profile-title">我的主页</h1><p id="profile-bio"></p><span id="profile-account-id" class="profile-account-id"></span></div>
+              <button id="profile-edit" class="button button-secondary" type="button" aria-expanded="false" aria-controls="profile-form">编辑资料</button>
+            </header>
+            <form id="profile-form" class="profile-edit-form" hidden>
+              <fieldset><legend>选一个头像</legend><div class="profile-avatar-options">
+                <label><input type="radio" name="avatar_key" value="ticket" checked><span class="profile-avatar" data-avatar="ticket" aria-hidden="true">映</span><span>票根</span></label>
+                <label><input type="radio" name="avatar_key" value="screen"><span class="profile-avatar" data-avatar="screen" aria-hidden="true">幕</span><span>银幕</span></label>
+                <label><input type="radio" name="avatar_key" value="moon"><span class="profile-avatar" data-avatar="moon" aria-hidden="true">月</span><span>月色</span></label>
+                <label><input type="radio" name="avatar_key" value="flower"><span class="profile-avatar" data-avatar="flower" aria-hidden="true">花</span><span>花间</span></label>
+              </div></fieldset>
+              <label for="profile-nickname">昵称 <span>最多 24 个字</span></label><input id="profile-nickname" maxlength="24" autocomplete="nickname" placeholder="给自己起一个昵称">
+              <label for="profile-bio-input">一句话介绍自己 <span>选填，最多 160 个字</span></label><textarea id="profile-bio-input" maxlength="160" rows="2" placeholder="比如：喜欢在散场后再坐一会儿。"></textarea>
+              <p id="profile-save-error" class="form-error" role="alert"></p>
+              <div class="profile-edit-actions"><button id="profile-save" class="button button-primary" type="submit">保存资料</button><button id="profile-cancel" class="text-button" type="button">取消</button></div>
+            </form>
+            <section class="profile-footprints" aria-label="在影伴记录的电影足迹">
+              <p>在影伴留下的足迹</p>
+              <div class="profile-stats">
+                <button type="button" data-profile-history="watched"><strong id="profile-watched">0</strong><span>部已看电影 ↗</span></button>
+                <button type="button" data-profile-history="watchlist"><strong id="profile-watchlist">0</strong><span>部想看电影 ↗</span></button>
+                <button type="button" data-profile-history="reflections"><strong id="profile-reflections">0</strong><span>份已保存观后感 ↗</span></button>
+              </div>
+            </section>
+            <div class="profile-columns">
+              <section class="profile-taste" aria-labelledby="profile-taste-title">
+                <p class="eyebrow">从你选过的电影开始</p><h2 id="profile-taste-title">阿映目前怎么理解我</h2>
+                <p id="profile-taste-summary" class="profile-taste-summary"></p>
+                <div id="profile-taste-tags" class="profile-taste-tags"></div>
+                <button id="profile-taste-details" class="text-button" type="button">查看依据与修正 →</button>
+                <button id="profile-taste-start" class="text-button" type="button" hidden>选几部看过的电影 →</button>
+              </section>
+              <section class="profile-records" aria-labelledby="profile-records-title">
+                <div class="profile-section-heading"><h2 id="profile-records-title">最近留下的记录</h2><button class="text-button" type="button" data-profile-history="reflections">查看全部 →</button></div>
+                <div id="profile-record-list"></div>
+              </section>
+            </div>
+            <details class="profile-settings"><summary>账户与使用设置</summary>
+              <div class="profile-settings-body"><p id="profile-login-account"></p>
+                <label class="profile-preference"><input id="profile-auto-drafts" type="checkbox"><span>聊完电影后，自动整理观后感草稿<small>草稿需要你确认后，才会计入主页的观后感。</small></span></label>
+                <p id="profile-preference-status" role="status"></p>
+                <button id="profile-logout" class="text-button" type="button">退出登录 →</button>
+              </div>
+            </details>
+          </div>
+        </section>
+
         <section id="history-view" class="view history-view" hidden>
           <div class="history-header">
             <div>
@@ -265,6 +324,7 @@
             <button class="history-tab is-active" data-state="watched" role="tab" type="button">看过</button>
             <button class="history-tab" data-state="watchlist" role="tab" type="button">想看</button>
             <button class="history-tab" data-state="disliked" role="tab" type="button">不感兴趣</button>
+            <button class="history-tab" data-state="reflections" role="tab" type="button">观后感</button>
           </div>
           <div id="history-grid" class="history-grid"></div>
           <button id="history-load-more" class="button button-secondary history-load-more" type="button" hidden>加载更多</button>
@@ -517,6 +577,6 @@
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <script src="/ui-content.js?v=1" defer></script>
     <script src="/movie-components.js?v=2" defer></script>
-    <script src="/app.js?v=41" defer></script>
+    <script src="/app.js?v=42" defer></script>
   </body>
 </html>

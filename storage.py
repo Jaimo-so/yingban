@@ -562,6 +562,11 @@ class Store:
                 str(row["name"])
                 for row in connection.execute("PRAGMA table_info(account_profiles)").fetchall()
             }
+            for column, default in (("nickname", ""), ("bio", ""), ("avatar_key", "ticket")):
+                if column not in profile_columns:
+                    connection.execute(
+                        f"ALTER TABLE account_profiles ADD COLUMN {column} TEXT NOT NULL DEFAULT '{default}'"
+                    )
             if "weekly_recommendations_enabled" not in profile_columns:
                 connection.execute(
                     "ALTER TABLE account_profiles ADD COLUMN "
@@ -1143,6 +1148,71 @@ class Store:
             )
         return result.rowcount > 0
 
+    def personal_profile(self, account_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT a.id, a.created_at, COALESCE(p.nickname, '') AS nickname,
+                          COALESCE(p.bio, '') AS bio, COALESCE(p.avatar_key, 'ticket') AS avatar_key,
+                          COALESCE(c.username, '') AS username
+                   FROM accounts a LEFT JOIN account_profiles p ON p.account_id = a.id
+                   LEFT JOIN account_credentials c ON c.account_id = a.id WHERE a.id = ?""",
+                (account_id,),
+            ).fetchone()
+        return dict(row) if row else {}
+
+    def update_personal_profile(self, account_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        values = {}
+        for field, limit in (("nickname", 24), ("bio", 160)):
+            value = payload.get(field)
+            if not isinstance(value, str) or len(value.strip()) > limit:
+                raise ValueError(f"{'昵称' if field == 'nickname' else '简介'}最多 {limit} 个字符")
+            values[field] = value.strip()
+        avatar = payload.get("avatar_key")
+        if not isinstance(avatar, str) or avatar not in {"ticket", "screen", "moon", "flower"}:
+            raise ValueError("请选择一个内置头像")
+        with self.transaction(immediate=True) as connection:
+            self._ensure_profile(connection, account_id)
+            connection.execute(
+                """UPDATE account_profiles SET nickname = ?, bio = ?, avatar_key = ?, updated_at = ?
+                   WHERE account_id = ?""",
+                (values["nickname"], values["bio"], avatar, utc_now(), account_id),
+            )
+        return self.personal_profile(account_id)
+
+    def saved_reflection_movies(self, account_id: str) -> list[dict[str, Any]]:
+        # One latest user-confirmed version per movie; a newer AI draft does not replace it.
+        with self.connect() as connection:
+            rows = connection.execute(
+                """SELECT m.*, m.id AS movie_id, r.content AS note, r.status AS reflection_status,
+                          r.version AS reflection_version, r.updated_at AS reflection_updated_at
+                   FROM movie_reflections r JOIN movies m ON m.id = r.movie_id
+                   WHERE r.account_id = ? AND r.status IN ('confirmed', 'locked')
+                     AND NOT EXISTS (SELECT 1 FROM movie_reflections newer
+                         WHERE newer.account_id = r.account_id AND newer.movie_id = r.movie_id
+                         AND newer.status IN ('confirmed', 'locked') AND newer.version > r.version)
+                   ORDER BY r.updated_at DESC, r.id DESC""", (account_id,),
+            ).fetchall()
+        return [self._decode_movie_row(dict(row)) for row in rows]
+
+    def personal_home(self, account_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            counts = {row["state"]: row["count"] for row in connection.execute(
+                "SELECT state, COUNT(*) AS count FROM user_movie_states WHERE account_id = ? GROUP BY state",
+                (account_id,),
+            )}
+        records = self.saved_reflection_movies(account_id)
+        taste = self.account_profile(account_id)
+        return {
+            "profile": self.personal_profile(account_id),
+            "stats": {"watched": counts.get("watched", 0), "watchlist": counts.get("watchlist", 0),
+                      "reflections": len(records)},
+            "taste": {key: taste[key] for key in ("taste_summary", "taste_dimensions", "taste_version")},
+            "recent_records": [{"movie_id": movie["id"], "title_zh": movie["title_zh"],
+                                "year": movie["year"], "excerpt": movie["note"][:180],
+                                "updated_at": movie["reflection_updated_at"]} for movie in records[:3]],
+            "auto_generate_drafts": taste["auto_generate_reflection_drafts"],
+        }
+
     def account_profile(self, account_id: str) -> dict[str, Any]:
         with self.connect() as connection:
             row = connection.execute(
@@ -1161,6 +1231,9 @@ class Store:
                 "weekly_recommendations_enabled": True,
             }
         result = dict(row)
+        # Personal presentation fields are not Agent memory or taste evidence.
+        for field in ("nickname", "bio", "avatar_key"):
+            result.pop(field, None)
         result["taste_dimensions"] = json.loads(result.pop("taste_dimensions_json") or "[]")
         result["auto_generate_reflection_drafts"] = bool(
             result["auto_generate_reflection_drafts"]
@@ -1370,13 +1443,21 @@ class Store:
                 found = True
         if not found:
             raise ValueError("口味结论不存在")
+        visible = [item for item in dimensions if not item.get("hidden")]
+        preferred = [item["label"].split(" · ", 1)[-1] for item in visible if item["direction"] == "prefer"][:3]
+        avoided = [item["label"].split(" · ", 1)[-1] for item in visible if item["direction"] == "avoid"][:2]
+        summary = "；".join(part for part in (
+            "目前更偏向" + "、".join(preferred) if preferred else "",
+            "对" + "、".join(avoided) + "暂时更谨慎" if avoided else "",
+        ) if part)
+        summary = (summary + "。这些判断来自你选择的电影，可以随时修正。") if summary else "暂时没有保留的口味结论。我们可以继续从具体电影聊起。"
         now = utc_now()
         with self.connect() as connection:
             connection.execute(
                 """UPDATE account_profiles
-                   SET taste_dimensions_json = ?, taste_version = taste_version + 1,
+                   SET taste_dimensions_json = ?, taste_summary = ?, taste_version = taste_version + 1,
                        updated_at = ? WHERE account_id = ?""",
-                (json.dumps(dimensions, ensure_ascii=False), now, account_id),
+                (json.dumps(dimensions, ensure_ascii=False), summary, now, account_id),
             )
         return self.account_profile(account_id)
 
@@ -2501,7 +2582,7 @@ class Store:
     ) -> dict[str, Any]:
         safe_cursor = max(0, int(cursor))
         safe_limit = max(1, min(int(limit), 50))
-        items = self.movie_states(account_id, state)
+        items = self.saved_reflection_movies(account_id) if state == "reflections" else self.movie_states(account_id, state)
         page = items[safe_cursor : safe_cursor + safe_limit]
         next_cursor = safe_cursor + len(page)
         return {
