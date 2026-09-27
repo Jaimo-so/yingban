@@ -188,6 +188,7 @@
               <h1 id="chat-title">刚看完哪一部？</h1>
             </div>
             <div class="chat-preferences">
+              <button id="chat-draft-clear" class="voice-autoplay-toggle" type="button">新对话</button>
               <button id="chat-history-button" class="voice-autoplay-toggle" type="button" aria-label="打开历史对话" hidden>
                 <svg class="history-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2M6.4 5.9 4.8 4.3M17.6 5.9l1.6-1.6"/></svg>
                 <span>历史对话</span>
@@ -207,7 +208,6 @@
 
           <div id="chat-draft-notice" class="chat-draft-notice" hidden>
             <span id="chat-draft-message">本机历史最多保留 7 天；新的成功聊天会保存在服务端供管理员查看。</span>
-            <button id="chat-draft-clear" class="text-button" type="button">开始新对话</button>
           </div>
 
           <section id="skill-toolbar" class="skill-toolbar" aria-label="聊天模式" hidden>
@@ -485,7 +485,7 @@
         <button class="icon-button" value="cancel" aria-label="关闭设置">×</button>
       </form>
       <div class="utility-dialog-body settings-stack">
-        <section><h3>本机历史对话</h3><p>每次进入“聊电影”都会开始新对话；本机副本默认 7 天后自动过期。新的成功聊天会保存在服务端，供管理员按账户查看；清空本机副本不会删除服务端记录。</p><button id="clear-all-local-drafts" class="button button-secondary" type="button">清空此设备全部历史对话</button></section>
+        <section><h3>本机历史对话</h3><p>进入“聊电影”或“选电影”会恢复该入口上次的对话，点击“新对话”可另开一段；本机副本默认 7 天后自动过期。新的成功聊天会保存在服务端，供管理员按账户查看；清空本机副本不会删除服务端记录。</p><button id="clear-all-local-drafts" class="button button-secondary" type="button">清空此设备全部历史对话</button></section>
       </div>
     </dialog>
 
@@ -517,6 +517,6 @@
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <script src="/ui-content.js?v=1" defer></script>
     <script src="/movie-components.js?v=2" defer></script>
-    <script src="/app.js?v=39" defer></script>
+    <script src="/app.js?v=41" defer></script>
   </body>
 </html>

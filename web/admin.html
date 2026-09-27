@@ -280,6 +280,11 @@
           </div>
 
           <form id="voice-config-form" class="config-card model-form">
+            <div class="field field-wide">
+              <div><button id="voice-mode-toggle" class="button button-secondary" type="button" role="switch" aria-checked="false" aria-label="语音交互模式" aria-describedby="voice-mode-help" disabled>正在读取语音状态…</button></div>
+              <small id="voice-mode-help">关闭后使用纯文字交互，保留已保存的语音配置。切换立即保存。</small>
+              <span id="voice-mode-result" class="action-result" role="status" aria-live="polite"></span>
+            </div>
             <div class="field">
               <label for="voice-provider">语音服务商（选择接口时自动切换）</label>
               <select id="voice-provider" required>
@@ -602,6 +607,6 @@
     </dialog>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/admin.js?v=23" defer></script>
+    <script src="/admin.js?v=24" defer></script>
   </body>
 </html>

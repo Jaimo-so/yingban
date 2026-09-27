@@ -385,6 +385,12 @@ class YingbanHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if path == "/api/voice/status":
+            if not self._require_user():
+                return
+            self._json({"voice_available": bool(self.app.voice and self.app.voice.config().enabled)})
+            return
+
         if path == "/api/me":
             account_id = self._account_id()
             if not account_id:
@@ -397,7 +403,11 @@ class YingbanHandler(BaseHTTPRequestHandler):
                 {
                     "authenticated": True,
                     "local_open_access": self._local_open_access(),
-                    "account": {"id_hint": account_id[-6:], "watched_count": watched_count},
+                    "account": {
+                        "id_hint": account_id,
+                        "storage_hint": self.app.store.account_storage_hint(account_id),
+                        "watched_count": watched_count,
+                    },
                     "demo_mode": self.app.agent.model_config().demo_mode,
                     "openings": self.app.agent.openings(),
                     "voice_available": bool(
@@ -1064,8 +1074,8 @@ class YingbanHandler(BaseHTTPRequestHandler):
             account_id = self._require_user()
             if not account_id:
                 return
-            if self.app.voice is None:
-                self._json({"error": "语音服务不可用"}, HTTPStatus.SERVICE_UNAVAILABLE)
+            if not self.app.voice or not self.app.voice.config().enabled:
+                self._json({"voice_available": False})
                 return
             text_value = str(payload.get("text", "")).strip()
             full = bool(payload.get("full", False))
@@ -1211,8 +1221,8 @@ class YingbanHandler(BaseHTTPRequestHandler):
             account_id = self._require_user()
             if not account_id:
                 return
-            if self.app.voice is None:
-                self._json({"error": "语音服务不可用"}, HTTPStatus.SERVICE_UNAVAILABLE)
+            if not self.app.voice or not self.app.voice.config().enabled:
+                self._json({"voice_available": False})
                 return
             started = time.perf_counter()
             try:
@@ -1220,15 +1230,24 @@ class YingbanHandler(BaseHTTPRequestHandler):
                 audio = base64.b64decode(encoded, validate=True)
                 text = self.app.voice.transcribe(audio, str(payload.get("mime_type", "audio/webm")))
             except (ValueError, RuntimeError, binascii.Error) as error:
+                if not self.app.voice.config().enabled:
+                    self._json({"voice_available": False})
+                    return
                 self._record_voice_usage("stt", account_id, False, started, type(error).__name__)
                 self.app.store.record_product_event("voice_transcription_failed", account_id, {"error_category": type(error).__name__})
                 self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
                 return
             except Exception as error:  # noqa: BLE001
+                if not self.app.voice.config().enabled:
+                    self._json({"voice_available": False})
+                    return
                 self._record_voice_usage("stt", account_id, False, started, type(error).__name__)
                 self.app.store.record_product_event("voice_transcription_failed", account_id, {"error_category": type(error).__name__})
                 LOG.warning("voice transcription failed: %s", type(error).__name__)
                 self._json({"error": "语音识别暂时不可用"}, HTTPStatus.BAD_GATEWAY)
+                return
+            if not self.app.voice.config().enabled:
+                self._json({"voice_available": False})
                 return
             self._record_voice_usage("stt", account_id, True, started)
             self.app.store.record_product_event("voice_transcription_succeeded", account_id, {"characters": len(text)})
@@ -1238,23 +1257,32 @@ class YingbanHandler(BaseHTTPRequestHandler):
             account_id = self._require_user()
             if not account_id:
                 return
-            if self.app.voice is None:
-                self._json({"error": "语音服务不可用"}, HTTPStatus.SERVICE_UNAVAILABLE)
+            if not self.app.voice or not self.app.voice.config().enabled:
+                self._json({"voice_available": False})
                 return
             started = time.perf_counter()
             self.app.store.record_product_event("voice_reply_requested", account_id)
             try:
                 audio, content_type = self.app.voice.synthesize(str(payload.get("text", "")))
             except ValueError as error:
+                if not self.app.voice.config().enabled:
+                    self._json({"voice_available": False})
+                    return
                 self._record_voice_usage("tts", account_id, False, started, type(error).__name__)
                 self.app.store.record_product_event("voice_reply_failed", account_id, {"error_category": type(error).__name__})
                 self._json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
                 return
             except Exception as error:  # noqa: BLE001
+                if not self.app.voice.config().enabled:
+                    self._json({"voice_available": False})
+                    return
                 self._record_voice_usage("tts", account_id, False, started, type(error).__name__)
                 self.app.store.record_product_event("voice_reply_failed", account_id, {"error_category": type(error).__name__})
                 LOG.warning("voice synthesis failed: %s", type(error).__name__)
                 self._json({"error": "语音回复暂时不可用"}, HTTPStatus.BAD_GATEWAY)
+                return
+            if not self.app.voice.config().enabled:
+                self._json({"voice_available": False})
                 return
             self._record_voice_usage("tts", account_id, True, started)
             self.app.store.record_product_event("voice_reply_succeeded", account_id, {"bytes": len(audio)})
@@ -1580,7 +1608,7 @@ class YingbanHandler(BaseHTTPRequestHandler):
             self.app.store.record_product_event("onboarding_started", account_id)
         self.app.store.record_product_event("login_succeeded", account_id)
         cookie = self._cookie(USER_COOKIE, token, self.app.settings.session_days * 86400)
-        self._json({"ok": True, "account": {"id_hint": account_id[-6:]}}, cookies=[cookie])
+        self._json({"ok": True, "account": {"id_hint": account_id}}, cookies=[cookie])
 
     def _register(self, payload: dict[str, Any]) -> None:
         remote = self.client_address[0]
@@ -1598,7 +1626,7 @@ class YingbanHandler(BaseHTTPRequestHandler):
             return
         self.app.store.record_product_event("registered", account_id)
         cookie = self._cookie(USER_COOKIE, token, self.app.settings.session_days * 86400)
-        self._json({"ok": True, "account": {"id_hint": account_id[-6:]}}, cookies=[cookie], status=HTTPStatus.CREATED)
+        self._json({"ok": True, "account": {"id_hint": account_id}}, cookies=[cookie], status=HTTPStatus.CREATED)
 
     def _admin_login(self, payload: dict[str, Any]) -> None:
         configured = self.app.settings.admin_token
@@ -2148,8 +2176,12 @@ class YingbanHandler(BaseHTTPRequestHandler):
         def work() -> dict[str, Any]:
             started = time.perf_counter()
             try:
+                if not app.voice or not app.voice.config().enabled:
+                    return {"voice_available": False}
                 spoken = compact_voice_text(text_value, full)
                 audio, content_type = app.voice.synthesize(spoken)  # type: ignore[union-attr]
+                if not app.voice.config().enabled:
+                    return {"voice_available": False}
                 with EPHEMERAL_AUDIO_LOCK:
                     EPHEMERAL_AUDIO[job_id] = (time.time() + 600, audio, content_type)
                 app.store.record_model_usage(
@@ -2158,6 +2190,8 @@ class YingbanHandler(BaseHTTPRequestHandler):
                 )
                 return {"audio_available": True, "mode": "full" if full else "summary"}
             except Exception as error:
+                if app.voice and not app.voice.config().enabled:
+                    return {"voice_available": False}
                 app.store.record_model_usage(
                     "tts", "voice", "background-voice", False,
                     round((time.perf_counter() - started) * 1000), account_id,

@@ -15,6 +15,7 @@ const state = {
   restoredConversation: false,
   returnToChatFromHistory: false,
   conversationHistoryMovie: null,
+  conversationHistoryMode: "discussion",
   pendingConversationDeleteId: null,
   selectedMovieId: null,
   selectedMovie: null,
@@ -38,7 +39,6 @@ const state = {
     discussion_movie: "嗯，《{movie}》。先不急着分析，你看完后脑子里冒出来的第一句话是什么？",
     recommendation: "今晚想让电影替你做什么？放松一下、陪你待会儿，还是换个角度看看最近的一件事？",
   },
-  activeVoiceAudio: null,
   reflectionMovie: null,
   reflectionTrigger: null,
   reflectionBundle: null,
@@ -78,7 +78,8 @@ const localConversationStore = {
       && value.schema_version === 2
       && value.storage === "local-browser"
       && value.account_hint === state.accountHint
-      && value.mode === "discussion"
+      && ["discussion", "recommendation"].includes(value.mode)
+      && Array.isArray(value.history)
       && Number(value.expires_at) > Date.now()
     );
   },
@@ -95,7 +96,7 @@ const localConversationStore = {
       return null;
     }
   },
-  list() {
+  list(mode = null, includeEmpty = false) {
     const items = [];
     try {
       Object.keys(window.localStorage)
@@ -103,7 +104,8 @@ const localConversationStore = {
         .forEach((key) => {
           const id = key.slice(this.accountPrefix().length);
           const value = this.read(id);
-          if (value?.movie?.title_zh && (value.history?.length || value.input?.trim())) items.push(value);
+          if (value && (!mode || value.mode === mode)
+              && (includeEmpty || value.history.length || value.input?.trim())) items.push(value);
         });
     } catch { return []; }
     return items.sort((left, right) => Number(right.updated_at) - Number(left.updated_at));
@@ -111,14 +113,14 @@ const localConversationStore = {
   listForMovie(movieId) {
     const targetId = String(movieId || "");
     if (!targetId) return [];
-    return this.list().filter((conversation) => {
+    return this.list("discussion").filter((conversation) => {
       const conversationMovieId = conversation.movie?.id || conversation.movie?.movie_id;
       return String(conversationMovieId || "") === targetId;
     });
   },
-  writeCurrent(input = "") {
-    if (state.mode !== "discussion" || !state.currentConversationId) return;
-    if (!state.chatHistory.length && !input.trim()) return;
+  writeCurrent(input = "", allowEmpty = false) {
+    if (!["discussion", "recommendation"].includes(state.mode) || !state.currentConversationId) return;
+    if (!allowEmpty && !state.chatHistory.length && !input.trim() && !this.read(state.currentConversationId)) return;
     const now = Date.now();
     const previous = this.read(state.currentConversationId);
     const movie = state.selectedMovie || previous?.movie || null;
@@ -128,8 +130,8 @@ const localConversationStore = {
         storage: "local-browser",
         id: state.currentConversationId,
         account_hint: state.accountHint,
-        mode: "discussion",
-        title: movie?.title_zh ? `《${movie.title_zh}》` : "尚未指定电影",
+        mode: state.mode,
+        title: state.mode === "recommendation" ? "选电影" : (movie?.title_zh ? `《${movie.title_zh}》` : "聊电影"),
         movie,
         skill_key: activeConversationSkillKey(),
         history: state.chatHistory.slice(-40),
@@ -234,19 +236,15 @@ function showAuthenticated(me) {
   $("#login-view").hidden = true;
   $("#app-shell").hidden = false;
   $("#watched-count").textContent = me.account?.watched_count ?? 0;
-  state.accountHint = me.account?.id_hint || "account";
+  state.accountHint = me.account?.storage_hint || me.account?.id_hint || "account";
   localConversationStore.migrateLegacyDrafts();
-  state.voiceConfigured = Boolean(me.voice_available);
   state.openings = { ...state.openings, ...(me.openings || {}) };
   state.skills = Array.isArray(me.skills) ? me.skills : [];
   state.onboardingStatus = me.onboarding?.status || "not_started";
   state.autoGenerateReflectionDrafts = me.reflection_preferences?.auto_generate_drafts !== false;
   $("#reflection-auto-generate").checked = state.autoGenerateReflectionDrafts;
   state.voiceSupported = Boolean(window.MediaRecorder && navigator.mediaDevices?.getUserMedia);
-  const voiceButton = $("#voice-mode-button");
-  voiceButton.disabled = !state.voiceSupported;
-  voiceButton.title = state.voiceSupported ? "语音输入" : "当前浏览器不支持录音";
-  updateVoiceAutoPlayToggle();
+  applyVoiceAvailability(Boolean(me.voice_available));
   setVoiceMode(false);
   restoreLocation();
 }
@@ -586,6 +584,10 @@ function activateSkill(skillKey) {
 }
 
 async function openChat(mode, movie = null, options = {}) {
+  if (state.sending) {
+    showToast("回复完成后就可以切换或开启新对话");
+    return false;
+  }
   const requestVersion = ++navigationVersion;
   if (state.currentConversationId) {
     localConversationStore.writeCurrent($("#chat-input")?.value || "");
@@ -593,15 +595,20 @@ async function openChat(mode, movie = null, options = {}) {
   try {
     const me = await api("/api/me");
     state.openings = { ...state.openings, ...(me.openings || {}) };
+    applyVoiceAvailability(Boolean(me.voice_available));
     state.skills = Array.isArray(me.skills) ? me.skills : state.skills;
   } catch { /* keep the last known openings */ }
-  if (requestVersion !== navigationVersion || !state.authenticated) return;
-  const restored = options.conversation || null;
+  if (requestVersion !== navigationVersion || !state.authenticated || state.sending) return false;
+  const restored = options.conversation || (!options.newConversation && !movie
+    ? localConversationStore.list(mode, true)[0] : null);
   state.returnToChatFromHistory = false;
   state.mode = mode;
   state.activeSkillKey = mode === "recommendation" && enabledSkill("movie_decision_support")
     ? "movie_decision_support"
     : null;
+  if (mode === "discussion" && enabledSkill(restored?.skill_key)?.module === mode) {
+    state.activeSkillKey = restored.skill_key;
+  }
   state.lastSkillUserText = "";
   state.lastSkillAssistantText = "";
   state.chatHistory = restored?.history ? [...restored.history] : [];
@@ -613,7 +620,7 @@ async function openChat(mode, movie = null, options = {}) {
   state.selectedMovieId = state.selectedMovie?.id || state.selectedMovie?.movie_id || null;
   $("#reflection-generate-button").hidden = !(mode === "discussion" && state.selectedMovie);
   $("#conversation-summary-button").hidden = !(mode === "discussion" && state.selectedMovie);
-  $("#chat-history-button").hidden = mode !== "discussion";
+  $("#chat-history-button").hidden = false;
   $("#chat-messages").replaceChildren();
   $("#spoiler-control").hidden = mode !== "discussion";
   renderSkillToolbar();
@@ -636,22 +643,24 @@ async function openChat(mode, movie = null, options = {}) {
       if (item.role === "assistant" && state.voiceConfigured) {
         attachVoiceReply(message, item.content, { lazy: true });
       }
+      if (item.role === "assistant") renderRecommendations(item.recommendations);
     });
     else renderMessage("assistant", opening);
     $("#chat-input").value = restored.input || "";
     $("#spoilers-allowed").checked = restored.spoilers_allowed !== false;
     $("#chat-draft-message").textContent = `正在查看 ${restored.title || "这段"} 历史对话；本机副本保留 7 天，新的成功聊天会保存在服务端供管理员查看。`;
-    $("#chat-draft-clear").textContent = "开始新对话";
-    $("#chat-draft-notice").hidden = false;
+    $("#chat-draft-notice").hidden = !state.chatHistory.length && !restored.input?.trim();
   } else {
     renderMessage("assistant", opening);
     $("#chat-input").value = "";
     $("#spoilers-allowed").checked = true;
     $("#chat-draft-notice").hidden = true;
   }
+  localConversationStore.writeCurrent($("#chat-input").value, true);
   autoResize($("#chat-input"));
   $("#chat-input").focus({ preventScroll: true });
   scrollChatToLatest({ behavior: "auto", force: true });
+  return true;
 }
 
 function conversationHistoryItem(conversation) {
@@ -684,7 +693,7 @@ function conversationHistoryItem(conversation) {
   open.textContent = "打开对话";
   open.addEventListener("click", () => {
     $("#conversation-history-dialog").close();
-    openChat("discussion", conversation.movie || null, { conversation });
+    openChat(conversation.mode, conversation.movie || null, { conversation });
   });
   const remove = document.createElement("button");
   remove.type = "button";
@@ -705,9 +714,10 @@ function conversationHistoryItem(conversation) {
 function renderConversationHistory(movie = state.conversationHistoryMovie) {
   const list = $("#conversation-history-list");
   const movieId = movie?.id || movie?.movie_id || null;
-  const items = movieId ? localConversationStore.listForMovie(movieId) : localConversationStore.list();
+  const mode = state.conversationHistoryMode;
+  const items = movieId ? localConversationStore.listForMovie(movieId) : localConversationStore.list(mode);
   list.replaceChildren();
-  $("#conversation-history-title").textContent = movie ? `《${movie.title_zh}》的聊天记录` : "历史对话";
+  $("#conversation-history-title").textContent = movie ? `《${movie.title_zh}》的聊天记录` : `${mode === "recommendation" ? "选电影" : "聊电影"}的历史对话`;
   $("#conversation-history-count").textContent = items.length
     ? `当前设备保存了 ${items.length} 段${movie ? "相关" : ""}对话`
     : (movie ? `当前设备还没有《${movie.title_zh}》的聊天记录` : "当前设备还没有历史对话");
@@ -717,14 +727,14 @@ function renderConversationHistory(movie = state.conversationHistoryMovie) {
     const text = document.createElement("p");
     text.textContent = movie
       ? `从“我的电影”继续聊《${movie.title_zh}》；本机历史保留 7 天，消息会同步到服务端供管理员查看。`
-      : "从一部刚看完的电影开始；本机历史保留 7 天，新的成功聊天会保存在服务端。";
+      : "开始一段新对话；本机历史保留 7 天，新的成功聊天会保存在服务端。";
     const start = document.createElement("button");
     start.type = "button";
     start.className = "button button-primary";
-    start.textContent = movie ? `新聊《${movie.title_zh}》` : "开始新的聊电影";
+    start.textContent = movie ? `新聊《${movie.title_zh}》` : "开始新对话";
     start.addEventListener("click", () => {
       $("#conversation-history-dialog").close();
-      openChat("discussion", movie);
+      openChat(mode, movie, { newConversation: true });
     });
     empty.append(text, start);
     list.append(empty);
@@ -736,6 +746,7 @@ function renderConversationHistory(movie = state.conversationHistoryMovie) {
 function openConversationHistory(movie = null) {
   localConversationStore.writeCurrent($("#chat-input")?.value || "");
   state.conversationHistoryMovie = movie;
+  state.conversationHistoryMode = movie ? "discussion" : state.mode || "discussion";
   renderConversationHistory(movie);
   $("#conversation-history-dialog").showModal();
 }
@@ -1079,8 +1090,10 @@ async function sendMessage(forcedText = null, options = {}) {
   const input = $("#chat-input");
   const text = (forcedText ?? input.value).trim();
   if (!text) return;
+  // Playback preferences belong to the turn that starts now, including slow TTS jobs.
+  const voiceAutoPlay = state.voiceAutoPlay;
   state.chatAutoFollow = true;
-  const priorHistory = [...state.chatHistory];
+  const priorHistory = state.chatHistory.map(({ role, content }) => ({ role, content }));
   state.chatHistory.push({ role: "user", content: text });
   localConversationStore.writeCurrent("");
   renderMessage("user", text, false, options);
@@ -1091,6 +1104,7 @@ async function sendMessage(forcedText = null, options = {}) {
   scrollChatToLatest({ force: true });
   state.sending = true;
   $("#send-button").disabled = true;
+  $("#chat-draft-clear").disabled = true;
   try {
     const data = await requestChat({
       conversation_id: state.currentConversationId,
@@ -1112,7 +1126,7 @@ async function sendMessage(forcedText = null, options = {}) {
       $("#conversation-summary-button").hidden = state.mode !== "discussion";
     }
     const assistantMessage = renderMessage("assistant", data.reply);
-    state.chatHistory.push({ role: "assistant", content: data.reply });
+    state.chatHistory.push({ role: "assistant", content: data.reply, recommendations: data.recommendations || [] });
     if (data.active_skill?.key) {
       state.activeSkillKey = data.active_skill.key;
       state.lastSkillUserText = text;
@@ -1120,13 +1134,16 @@ async function sendMessage(forcedText = null, options = {}) {
       renderSkillToolbar();
       renderSkillArtifactActions(assistantMessage, data);
     }
-    localConversationStore.writeCurrent("");
+    localConversationStore.writeCurrent(input.value);
     try {
       await syncConversationRecord();
     } catch {
       showToast("对话已保存在此设备，后台记录同步失败");
     }
-    if (state.voiceConfigured) attachVoiceReply(assistantMessage, data.reply);
+    // Voice availability never blocks the text response or its persistence.
+    void refreshVoiceAvailability().then((available) => {
+      if (available && assistantMessage.isConnected) attachVoiceReply(assistantMessage, data.reply, { autoPlay: voiceAutoPlay });
+    });
     renderRecommendations(data.recommendations);
     if (data.reflection_updated && data.selected_movie) {
       showToast(`《${data.selected_movie.title_zh}》的观后感笔记已更新`);
@@ -1142,6 +1159,7 @@ async function sendMessage(forcedText = null, options = {}) {
   } finally {
     state.sending = false;
     $("#send-button").disabled = false;
+    $("#chat-draft-clear").disabled = false;
     if (!state.voiceMode) input.focus({ preventScroll: true });
   }
 }
@@ -1158,6 +1176,7 @@ async function markMovie(movie, movieState, source) {
 
 async function refreshMe() {
   const me = await api("/api/me");
+  applyVoiceAvailability(Boolean(me.voice_available));
   if (me.authenticated) {
     $("#watched-count").textContent = me.account.watched_count;
     state.skills = Array.isArray(me.skills) ? me.skills : state.skills;
@@ -1535,7 +1554,37 @@ function autoResize(textarea) {
   textarea.style.height = `${Math.min(textarea.scrollHeight, 160)}px`;
 }
 
+function applyVoiceAvailability(available) {
+  state.voiceConfigured = Boolean(available);
+  const button = $("#voice-mode-button");
+  button.hidden = !state.voiceConfigured;
+  button.disabled = !state.voiceConfigured || !state.voiceSupported;
+  button.title = state.voiceSupported ? "语音输入" : "当前浏览器不支持录音";
+  updateVoiceAutoPlayToggle();
+  if (!state.voiceConfigured) {
+    stopRecording(true);
+    setVoiceMode(false);
+    document.querySelectorAll(".voice-reply").forEach((wrap) => {
+      wrap.querySelector("audio")?.pause();
+      wrap.closest(".message-bubble")?.classList.remove("has-voice-reply");
+      wrap.remove();
+    });
+  }
+}
+
+async function refreshVoiceAvailability() {
+  if (!state.authenticated) return false;
+  try {
+    const data = await api("/api/voice/status");
+    applyVoiceAvailability(data.voice_available === true);
+  } catch {
+    applyVoiceAvailability(false);
+  }
+  return state.voiceConfigured;
+}
+
 function setVoiceMode(enabled) {
+  if (enabled && !state.voiceConfigured) return;
   if (enabled && !state.voiceSupported) {
     $("#voice-availability-status").textContent = "当前浏览器不支持录音，请使用最新版浏览器";
     showToast("当前浏览器不支持录音");
@@ -1570,17 +1619,17 @@ function bestRecordingMimeType() {
 
 async function startRecording() {
   if (state.recorder || state.sending) return;
-  if (!state.voiceConfigured) {
-    $("#voice-recording-status").textContent = "语音服务待管理员配置后启用";
-    showToast("请先在管理后台完成豆包语音配置");
-    return;
-  }
   state.stopRequested = false;
   state.cancelRecording = false;
   const button = $("#hold-to-talk");
   const status = $("#voice-recording-status");
   try {
+    if (!await refreshVoiceAvailability() || state.stopRequested) return;
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    if (!state.voiceConfigured || state.cancelRecording) {
+      stream.getTracks().forEach((track) => track.stop());
+      return;
+    }
     const mimeType = bestRecordingMimeType();
     const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
     state.recordingStream = stream;
@@ -1646,6 +1695,10 @@ async function finishRecording() {
       method: "POST",
       body: JSON.stringify({ audio_base64: audioBase64, mime_type: blob.type || "audio/webm" }),
     });
+    if (data.voice_available === false) {
+      applyVoiceAvailability(false);
+      return;
+    }
     status.textContent = `已识别：${data.text}`;
     await sendMessage(data.text, { voiceDuration: duration });
     status.textContent = "松开发送，Esc 取消";
@@ -1653,7 +1706,7 @@ async function finishRecording() {
     status.textContent = `语音发送失败：${error.message}`;
   } finally {
     button.disabled = !state.voiceConfigured;
-    button.focus();
+    if (state.voiceMode) button.focus();
   }
 }
 
@@ -1687,7 +1740,7 @@ function renderHistoricalVoiceReply(wrap, text) {
   button.addEventListener("click", async () => {
     button.disabled = true;
     const ready = await prepareVoiceReply(wrap, text, { playWhenReady: true });
-    if (!ready) {
+    if (!ready && state.voiceConfigured && wrap.isConnected) {
       renderHistoricalVoiceReply(wrap, text);
       showToast("语音准备失败，请再试一次");
     }
@@ -1697,17 +1750,27 @@ function renderHistoricalVoiceReply(wrap, text) {
   wrap.removeAttribute("role");
 }
 
-async function prepareVoiceReply(wrap, text, { playWhenReady = false } = {}) {
+async function prepareVoiceReply(wrap, text, { playWhenReady = false, autoPlay = false } = {}) {
   wrap.setAttribute("role", "status");
   wrap.textContent = "正在准备语音回复…";
   scrollChatToLatest();
   try {
+    if (!await refreshVoiceAvailability() || !wrap.isConnected) return false;
     const queued = await api("/api/jobs/voice", {
       method: "POST",
       body: JSON.stringify({ text, full: false }),
     });
+    if (queued.voice_available === false) {
+      applyVoiceAvailability(false);
+      return false;
+    }
     let data = null;
     await pollJob(queued.job.id, (job) => { data = job.result; }, "语音摘要生成失败");
+    if (data?.voice_available === false) {
+      applyVoiceAvailability(false);
+      return false;
+    }
+    if (!await refreshVoiceAvailability() || !wrap.isConnected) return false;
     if (!data?.audio_base64) throw new Error("语音缓存已过期");
     const { button, duration } = createVoiceReplyButton("…", "播放阿映的语音回复");
     const audio = document.createElement("audio");
@@ -1735,16 +1798,16 @@ async function prepareVoiceReply(wrap, text, { playWhenReady = false } = {}) {
     wrap.replaceChildren(button, audio);
     wrap.removeAttribute("role");
     scrollChatToLatest();
-    state.activeVoiceAudio = audio;
     if (playWhenReady) await playVoiceAudio(audio, button, false);
-    else if (state.voiceAutoPlay) await playVoiceAudio(audio, button, true);
+    else if (autoPlay) await playVoiceAudio(audio, button, true);
     return true;
   } catch {
     return false;
   }
 }
 
-async function attachVoiceReply(message, text, { lazy = false } = {}) {
+async function attachVoiceReply(message, text, { lazy = false, autoPlay = false } = {}) {
+  if (!state.voiceConfigured) return;
   const bubble = message.querySelector(".message-bubble");
   const wrap = document.createElement("div");
   wrap.className = "voice-reply";
@@ -1756,7 +1819,7 @@ async function attachVoiceReply(message, text, { lazy = false } = {}) {
     renderHistoricalVoiceReply(wrap, text);
     return;
   }
-  const ready = await prepareVoiceReply(wrap, text);
+  const ready = await prepareVoiceReply(wrap, text, { autoPlay });
   if (!ready) {
     wrap.remove();
     bubble.classList.remove("has-voice-reply");
@@ -1764,6 +1827,7 @@ async function attachVoiceReply(message, text, { lazy = false } = {}) {
 }
 
 async function playVoiceAudio(audio, button, automatic) {
+  if (!state.voiceConfigured || !audio.isConnected) return;
   document.querySelectorAll(".voice-reply audio").forEach((item) => {
     if (item !== audio && !item.paused) item.pause();
   });
@@ -1779,26 +1843,18 @@ async function playVoiceAudio(audio, button, automatic) {
 function updateVoiceAutoPlayToggle() {
   const button = $("#voice-autoplay-toggle");
   if (!button) return;
+  button.hidden = !state.voiceConfigured;
   button.disabled = !state.voiceConfigured;
   button.setAttribute("aria-pressed", String(state.voiceAutoPlay));
   button.setAttribute("aria-label", state.voiceAutoPlay ? "关闭 AI 语音自动播放" : "开启 AI 语音自动播放");
   button.querySelector("span").textContent = state.voiceAutoPlay ? "自动播放" : "手动播放";
 }
 
-async function setVoiceAutoPlay(enabled) {
+function setVoiceAutoPlay(enabled) {
   state.voiceAutoPlay = Boolean(enabled);
   saveVoiceAutoPlayPreference(state.voiceAutoPlay);
   updateVoiceAutoPlayToggle();
-  if (!state.voiceAutoPlay) {
-    document.querySelectorAll(".voice-reply audio").forEach((audio) => audio.pause());
-    showToast("后续语音回复将由你手动播放");
-    return;
-  }
-  showToast("后续语音回复将自动播放");
-  if (state.activeVoiceAudio?.paused) {
-    const button = state.activeVoiceAudio.closest(".voice-reply")?.querySelector(".voice-reply-button");
-    if (button) await playVoiceAudio(state.activeVoiceAudio, button, false);
-  }
+  showToast(state.voiceAutoPlay ? "从下一轮对话起，语音回复将自动播放" : "从下一轮对话起，语音回复将由你手动播放");
 }
 
 function showAuthMode(mode) {
@@ -2043,6 +2099,7 @@ $("#reflection-auto-generate").addEventListener("change", async (event) => {
 });
 $("#chat-form").addEventListener("submit", (event) => { event.preventDefault(); sendMessage(); });
 $("#voice-mode-button").addEventListener("click", () => setVoiceMode(!state.voiceMode));
+window.addEventListener("focus", () => { void refreshVoiceAvailability(); });
 $("#voice-autoplay-toggle").addEventListener("click", () => setVoiceAutoPlay(!state.voiceAutoPlay));
 $("#reflection-continue").addEventListener("click", () => {
   const movie = state.reflectionMovie;
@@ -2111,8 +2168,9 @@ $("#conversation-summary-save").addEventListener("click", () => saveConversation
 $("#conversation-summary-delete").addEventListener("click", () => deleteConversationSummary().catch((error) => showToast(error.message)));
 $("#chat-history-button").addEventListener("click", () => openConversationHistory());
 $("#chat-draft-clear").addEventListener("click", () => {
-  const movie = state.selectedMovie;
-  openChat("discussion", movie).then(() => showToast("已开始一段新的电影对话"));
+  openChat(state.mode, null, { newConversation: true }).then((opened) => {
+    if (opened) showToast("已开始新对话，原对话保留在历史记录中");
+  });
 });
 $("#clear-all-local-drafts").addEventListener("click", () => {
   localConversationStore.clearAll();
@@ -2130,12 +2188,17 @@ $("#conversation-history-delete-cancel").addEventListener("click", () => {
 $("#conversation-history-delete-confirm").addEventListener("click", () => {
   const id = state.pendingConversationDeleteId;
   if (!id) return;
+  if (state.sending) {
+    showToast("请等回复完成后再删除历史对话");
+    return;
+  }
   const deletingCurrent = id === state.currentConversationId;
   localConversationStore.remove(id);
   state.pendingConversationDeleteId = null;
   $("#conversation-history-delete-dialog").close();
   if (deletingCurrent) {
-    openChat("discussion", state.selectedMovie).then(() => showToast("历史对话已删除，已开始新对话"));
+    state.currentConversationId = null;
+    openChat(state.mode, null, { newConversation: true }).then(() => showToast("历史对话已删除，已开始新对话"));
     return;
   }
   renderConversationHistory(state.conversationHistoryMovie);

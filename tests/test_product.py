@@ -320,7 +320,7 @@ class InviteAndMemoryTests(ProductFixture):
         with self.assertRaisesRegex(InviteError, "无法恢复"):
             self.store.invite_code_for_admin(legacy_id)
         account_id, _token = self.store.login_with_invite(legacy_code, 30)
-        self.assertTrue(account_id.startswith("usr_"))
+        self.assertEqual(account_id, "1")
 
     def test_rotation_preserves_account_and_invalidates_old_code(self) -> None:
         code = self.store.generate_invites(1)[0]
@@ -742,7 +742,7 @@ class StageTenProductTests(ProductFixture):
         self.assertIn("flex: 0 0 16px", styles)
         self.assertIn("width: fit-content", styles)
 
-    def test_stage_eleven_discussion_entry_is_new_and_history_restore_is_explicit(self) -> None:
+    def test_chat_entries_restore_history_and_new_conversation_is_explicit(self) -> None:
         html = (PRODUCT_DIR / "web" / "index.html").read_text(encoding="utf-8")
         script = (PRODUCT_DIR / "web" / "app.js").read_text(encoding="utf-8")
         styles = (PRODUCT_DIR / "web" / "styles.css").read_text(encoding="utf-8")
@@ -752,11 +752,12 @@ class StageTenProductTests(ProductFixture):
         self.assertIn('prefix: "yingban.conversation.v2."', script)
         self.assertIn('legacyPrefix: "yingban.chatDraft.v1."', script)
         self.assertIn("migrateLegacyDrafts()", script)
-        self.assertIn("const restored = options.conversation || null", script)
+        self.assertIn("!options.newConversation && !movie", script)
+        self.assertIn("localConversationStore.list(mode, true)[0]", script)
         self.assertIn("restored?.id || localConversationStore.newId()", script)
-        self.assertIn('openChat("discussion", conversation.movie || null, { conversation })', script)
+        self.assertIn('openChat(conversation.mode, conversation.movie || null, { conversation })', script)
         self.assertIn("history: state.chatHistory.slice(-40)", script)
-        self.assertIn("value?.movie?.title_zh", script)
+        self.assertIn('this.list("discussion")', script)
         self.assertIn("conversation-history-item", styles)
         self.assertIn("conversation-history-actions", styles)
 
@@ -789,7 +790,7 @@ class StageTenProductTests(ProductFixture):
         self.assertIn('conversationCount: conversations.length', script)
         content = json.loads((PRODUCT_DIR / "web" / "ui-content.json").read_text(encoding="utf-8"))
         self.assertIn({"id": "conversations", "label": "聊天记录 {count}"}, content["cards"]["history"]["conversationActions"])
-        self.assertIn('openChat("discussion", conversation.movie || null, { conversation })', script)
+        self.assertIn('openChat(conversation.mode, conversation.movie || null, { conversation })', script)
 
     def test_stage_nineteen_movie_library_continues_latest_chat_without_creating_a_new_one(self) -> None:
         script = (PRODUCT_DIR / "web" / "app.js").read_text(encoding="utf-8")
@@ -834,7 +835,7 @@ class StageTenProductTests(ProductFixture):
         self.assertIn('state.skills = Array.isArray(me.skills) ? me.skills : state.skills;', script)
         self.assertIn('error.message === "请求的 Skill 不存在、已停用或不属于当前模块"', script)
         self.assertIn('body: JSON.stringify({ ...payload, skill_key: null })', script)
-        self.assertIn('/app.js?v=39', html)
+        self.assertIn('/app.js?v=41', html)
 
 
 class AgentConfigurationTests(ProductFixture):
@@ -1053,7 +1054,7 @@ class AgentConfigurationTests(ProductFixture):
             self.assertIn(base_url, admin_script)
         self.assertIn('const CUSTOM_BASE_URL = "__custom__"', admin_script)
         self.assertIn("全部厂家始终显示并按协议分组", admin_html)
-        self.assertIn('admin.js?v=23', admin_html)
+        self.assertIn('admin.js?v=24', admin_html)
 
     def test_stage_thirty_nine_admin_prompt_and_skill_management_use_name_selectors(self) -> None:
         admin_html = (PRODUCT_DIR / "web" / "admin.html").read_text(encoding="utf-8")
@@ -1072,7 +1073,7 @@ class AgentConfigurationTests(ProductFixture):
         self.assertIn("button.dataset.skillTarget = skill.skill_key", admin_script)
         self.assertIn(".management-selector.is-active", admin_css)
         self.assertIn('/admin.css?v=20', admin_html)
-        self.assertIn('/admin.js?v=23', admin_html)
+        self.assertIn('/admin.js?v=24', admin_html)
 
     def test_stage_forty_three_skill_editor_focuses_on_instructions(self) -> None:
         admin_html = (PRODUCT_DIR / "web" / "admin.html").read_text(encoding="utf-8")
@@ -1087,7 +1088,7 @@ class AgentConfigurationTests(ProductFixture):
         self.assertIn("input_contract: inputContract", admin_script)
         self.assertIn("output_contract: outputContract", admin_script)
         self.assertIn('/admin.css?v=20', admin_html)
-        self.assertIn('/admin.js?v=23', admin_html)
+        self.assertIn('/admin.js?v=24', admin_html)
 
     def test_stage_forty_two_current_docs_match_server_chat_persistence(self) -> None:
         app_script = (PRODUCT_DIR / "web" / "app.js").read_text(encoding="utf-8")
@@ -1135,7 +1136,7 @@ class AgentConfigurationTests(ProductFixture):
         self.assertIn("panel.hidden = panel.dataset.apiPanel !== apiKey", admin_script)
         self.assertIn(".api-selector-list .management-selector", admin_css)
         self.assertIn('/admin.css?v=20', admin_html)
-        self.assertIn('/admin.js?v=23', admin_html)
+        self.assertIn('/admin.js?v=24', admin_html)
 
     def test_model_manufacturer_picker_groups_all_protocols_and_switches_automatically(self) -> None:
         admin_html = (PRODUCT_DIR / "web" / "admin.html").read_text(encoding="utf-8")
@@ -1480,7 +1481,7 @@ class IntegrationConfigurationTests(ProductFixture):
         self.assertIn('status === "unavailable"', components)
         content = json.loads((PRODUCT_DIR / "web" / "ui-content.json").read_text(encoding="utf-8"))
         self.assertEqual(content["search"]["unavailable"], "电影搜索服务暂时不可用，请稍后重试。")
-        self.assertLess(html.index('/movie-components.js?v=2'), html.index('/app.js?v=39'))
+        self.assertLess(html.index('/movie-components.js?v=2'), html.index('/app.js?v=41'))
 
     def test_tmdb_result_is_persisted_with_a_real_poster_url(self) -> None:
         internet = InternetRuntime(self.settings, self.store)
@@ -2476,7 +2477,7 @@ class ProductSkillTests(ProductFixture):
         self.assertIn(".weekly-movie > div:not(.poster)", styles)
         self.assertNotIn(".weekly-movie > div {", styles)
         self.assertIn('/styles.css?v=29', html)
-        self.assertIn('/app.js?v=39', html)
+        self.assertIn('/app.js?v=41', html)
 
 
 class HTTPFlowTests(ProductFixture):

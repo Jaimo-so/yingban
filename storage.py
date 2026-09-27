@@ -131,6 +131,12 @@ class Store:
                     created_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS account_id_allocations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    legacy_id TEXT UNIQUE,
+                    legacy_storage_hint TEXT
+                );
+
                 CREATE TABLE IF NOT EXISTS account_credentials (
                     account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
                     username TEXT NOT NULL UNIQUE,
@@ -591,12 +597,75 @@ class Store:
                           created_at, updated_at FROM conversation_records"""
             )
 
+        self._migrate_account_ids()
+
         # The database can contain the administrator-configured model key.
         # Keep the local file private even when the process umask is permissive.
         try:
             self.path.chmod(0o600)
         except OSError:
             pass
+
+    @staticmethod
+    def _allocate_account_id(
+        connection: sqlite3.Connection, legacy_id: str | None = None,
+        legacy_storage_hint: str | None = None,
+    ) -> str:
+        # Keep allocation rows after account deletion so committed IDs never recur.
+        cursor = connection.execute(
+            "INSERT INTO account_id_allocations (legacy_id, legacy_storage_hint) VALUES (?, ?)",
+            (legacy_id, legacy_storage_hint),
+        )
+        return str(cursor.lastrowid)
+
+    def _migrate_account_ids(self) -> None:
+        """Atomically renumber legacy accounts and all their foreign keys at startup."""
+        with self.transaction(immediate=True) as connection:
+            accounts = connection.execute(
+                "SELECT id FROM accounts ORDER BY created_at, rowid"
+            ).fetchall()
+            # Preserve numeric IDs on subsequent starts, including mixed databases
+            # written by an older release after a code rollback.
+            for account in accounts:
+                if re.fullmatch(r"[1-9][0-9]*", account["id"]):
+                    connection.execute(
+                        "INSERT OR IGNORE INTO account_id_allocations (id) VALUES (?)",
+                        (int(account["id"]),),
+                    )
+            legacy = [a["id"] for a in accounts if not re.fullmatch(r"[1-9][0-9]*", a["id"])]
+            if not legacy:
+                return
+            # Existing schemas have NO ACTION update constraints. Defer their
+            # checks until every reference and the parent row have been rewritten.
+            connection.execute("PRAGMA defer_foreign_keys = ON")
+            references = []
+            for table in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall():
+                quoted_table = '"' + table["name"].replace('"', '""') + '"'
+                for key in connection.execute(f"PRAGMA foreign_key_list({quoted_table})"):
+                    if key["table"] == "accounts" and key["to"] == "id":
+                        quoted_column = '"' + key["from"].replace('"', '""') + '"'
+                        references.append((quoted_table, quoted_column))
+            for old_id in legacy:
+                new_id = self._allocate_account_id(connection, old_id, old_id[-6:])
+                for table, column in references:
+                    connection.execute(
+                        f"UPDATE {table} SET {column} = ? WHERE {column} = ?",
+                        (new_id, old_id),
+                    )
+                connection.execute("UPDATE accounts SET id = ? WHERE id = ?", (new_id, old_id))
+            if connection.execute("PRAGMA foreign_key_check").fetchone():
+                raise RuntimeError("账户数字 ID 迁移未通过外键检查")
+
+    def account_storage_hint(self, account_id: str) -> str:
+        """Keep existing browser drafts reachable; new namespaces cannot hit old suffixes."""
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT legacy_storage_hint FROM account_id_allocations WHERE id = ?",
+                (account_id,),
+            ).fetchone()
+        return str(row["legacy_storage_hint"]) if row and row["legacy_storage_hint"] else f"account-{account_id}"
 
     def get_app_settings(self, keys: list[str] | tuple[str, ...] | None = None) -> dict[str, str]:
         with self.connect() as connection:
@@ -1421,7 +1490,7 @@ class Store:
 
             account_id = invite["account_id"]
             if invite["status"] == "issued":
-                account_id = "usr_" + secrets.token_hex(12)
+                account_id = self._allocate_account_id(connection)
                 connection.execute(
                     "INSERT INTO accounts (id, status, created_at) VALUES (?, 'active', ?)",
                     (account_id, now.isoformat()),
@@ -1506,8 +1575,9 @@ class Store:
                 ).fetchone()
                 if invite is None or invite["status"] == "revoked":
                     raise CredentialError("邀请码无效或已停用")
-                account_id = str(invite["account_id"] or "usr_" + secrets.token_hex(12))
+                account_id = str(invite["account_id"] or "")
                 if invite["status"] == "issued":
+                    account_id = self._allocate_account_id(connection)
                     connection.execute(
                         "INSERT INTO accounts (id, status, created_at) VALUES (?, 'active', ?)",
                         (account_id, now),
@@ -1517,7 +1587,7 @@ class Store:
                         (account_id, now, invite["id"]),
                     )
             else:
-                account_id = "usr_" + secrets.token_hex(12)
+                account_id = self._allocate_account_id(connection)
                 connection.execute(
                     "INSERT INTO accounts (id, status, created_at) VALUES (?, 'active', ?)",
                     (account_id, now),
@@ -1567,15 +1637,15 @@ class Store:
         Multi-account databases get a dedicated local owner instead of choosing
         another person's account arbitrarily.
         """
-        local_account_id = "usr_local_owner"
         with self.transaction(immediate=True) as connection:
             local_row = connection.execute(
-                "SELECT status FROM accounts WHERE id = ?", (local_account_id,)
+                "SELECT a.id, a.status FROM accounts a JOIN account_id_allocations n "
+                "ON a.id = CAST(n.id AS TEXT) WHERE n.legacy_id = 'usr_local_owner'"
             ).fetchone()
             if local_row is not None:
                 if local_row["status"] != "active":
                     raise RuntimeError("本机免认证账户当前不可用")
-                return local_account_id
+                return str(local_row["id"])
 
             active_rows = connection.execute(
                 "SELECT id FROM accounts WHERE status = 'active' ORDER BY created_at, id"
@@ -1583,6 +1653,11 @@ class Store:
             if len(active_rows) == 1:
                 return str(active_rows[0]["id"])
 
+            # A physically deleted local owner must receive a fresh ID too.
+            connection.execute(
+                "UPDATE account_id_allocations SET legacy_id = NULL WHERE legacy_id = 'usr_local_owner'"
+            )
+            local_account_id = self._allocate_account_id(connection, "usr_local_owner")
             connection.execute(
                 "INSERT INTO accounts (id, status, created_at) VALUES (?, 'active', ?)",
                 (local_account_id, utc_now()),

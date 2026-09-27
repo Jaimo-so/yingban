@@ -6,13 +6,13 @@ const pages = [
     source: "index.html",
     output: "index.html",
     bodyClass: null,
-    assets: ["/styles.css?v=29", "/ui-content.js?v=1", "/movie-components.js?v=2", "/app.js?v=39"],
+    assets: ["/styles.css?v=29", "/ui-content.js?v=1", "/movie-components.js?v=2", "/app.js?v=41"],
   },
   {
     source: "admin.html",
     output: "admin.html",
     bodyClass: "admin-body",
-    assets: ["/styles.css?v=29", "/admin.css?v=20", "/admin.js?v=23"],
+    assets: ["/styles.css?v=29", "/admin.css?v=20", "/admin.js?v=24"],
   },
   {
     source: "share.html",

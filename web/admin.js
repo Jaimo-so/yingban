@@ -634,6 +634,7 @@ function updateWebSearchProviderUI(applyDefaults = true) {
 }
 
 function renderVoiceConfig(voice) {
+  renderVoiceMode(voice);
   const inferredProvider = voice.provider || (String(voice.base_url || "").includes("openspeech.bytedance.com") ? "doubao" : "openai_compatible");
   $("#voice-provider").value = inferredProvider;
   $("#voice-base-url").value = voice.base_url || "https://openspeech.bytedance.com";
@@ -654,10 +655,18 @@ function renderVoiceConfig(voice) {
   $("#voice-access-token-help").textContent = voice.has_access_token ? `当前 Access Token ${voice.access_token_hint}；留空表示保留。` : "新版控制台只需上面的 App Key；旧版控制台才填写这一组。";
   $("#clear-voice-access-token").checked = false;
   updateVoiceProviderUI(false);
+}
+
+function renderVoiceMode(voice) {
+  const toggle = $("#voice-mode-toggle");
+  const enabled = voice.mode_enabled !== false;
+  toggle.disabled = false;
+  toggle.setAttribute("aria-checked", String(enabled));
+  toggle.textContent = enabled ? "语音交互：已开启" : "语音交互：已关闭";
   const status = $("#voice-status");
   status.className = `connection-status ${voice.enabled ? "status-model" : "status-demo"}`;
   const providerLabel = { doubao: "豆包", stepfun: "阶跃星辰", openai_compatible: "OpenAI 兼容" }[voice.provider] || voice.provider;
-  status.textContent = voice.enabled ? `已接入 · ${providerLabel}` : "尚未配置";
+  status.textContent = !enabled ? "已关闭 · 纯文字交互" : voice.enabled ? `已接入 · ${providerLabel}` : "已开启 · 待配置";
 }
 
 function voicePayload() {
@@ -1224,6 +1233,27 @@ for (const [selector, target, label] of [
     }
   });
 }
+
+$("#voice-mode-toggle").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  const enabled = button.getAttribute("aria-checked") !== "true";
+  button.disabled = true;
+  $("#voice-mode-result").textContent = "正在保存…";
+  try {
+    const data = await api("/api/admin/voice-config", {
+      method: "POST",
+      body: JSON.stringify({ mode_enabled: enabled }),
+    });
+    renderVoiceMode(data.voice);
+    $("#voice-mode-result").textContent = enabled
+      ? (data.voice.configured ? "已开启语音交互" : "开关已开启，完成下方配置后可使用语音")
+      : "已关闭语音交互，前端使用纯文字";
+  } catch (error) {
+    $("#voice-mode-result").textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+});
 
 $("#voice-config-form").addEventListener("submit", async (event) => {
   event.preventDefault();

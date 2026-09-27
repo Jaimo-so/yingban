@@ -51,8 +51,8 @@ class LocalOpenAccessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             store = Store(root / "new.db", "pepper", "secret")
-            self.assertEqual(store.ensure_local_account(), "usr_local_owner")
-            self.assertEqual(store.ensure_local_account(), "usr_local_owner")
+            self.assertEqual(store.ensure_local_account(), "1")
+            self.assertEqual(store.ensure_local_account(), "1")
 
             existing = Store(root / "existing.db", "pepper", "secret")
             invite = existing.generate_invites(1)[0]

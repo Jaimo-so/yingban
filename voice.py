@@ -18,6 +18,7 @@ from storage import Store
 
 
 VOICE_SETTING_KEYS = (
+    "voice_mode_enabled",
     "voice_provider",
     "voice_api_key",
     "voice_app_id",
@@ -57,13 +58,18 @@ class VoiceConfig:
     voice_name: str
     audio_format: str
     timeout_seconds: float
+    mode_enabled: bool = True
 
     @property
-    def enabled(self) -> bool:
+    def configured(self) -> bool:
         credentials_ready = bool(self.api_key) if self.provider in {"openai_compatible", "stepfun"} else bool(
             self.api_key or (self.app_id and self.access_token)
         )
         return bool(credentials_ready and self.stt_model and self.tts_model and self.voice_name)
+
+    @property
+    def enabled(self) -> bool:
+        return self.mode_enabled and self.configured
 
 
 class VoiceRuntime:
@@ -79,6 +85,7 @@ class VoiceRuntime:
         if not saved_provider and saved.get("voice_base_url", "").startswith("https://api.openai.com"):
             saved_provider = "openai_compatible"
         current: dict[str, Any] = {
+            "mode_enabled": saved.get("voice_mode_enabled", "true") == "true",
             "provider": saved_provider or self.settings.voice_provider,
             "api_key": saved.get("voice_api_key", self.settings.voice_api_key),
             "app_id": saved.get("voice_app_id", self.settings.voice_app_id),
@@ -95,6 +102,10 @@ class VoiceRuntime:
             "timeout_seconds": saved.get("voice_timeout_seconds", self.settings.voice_timeout_seconds),
         }
         if overrides:
+            if "mode_enabled" in overrides:
+                if not isinstance(overrides["mode_enabled"], bool):
+                    raise ValueError("语音交互开关必须为布尔值")
+                current["mode_enabled"] = overrides["mode_enabled"]
             if overrides.get("clear_api_key") is True:
                 current["api_key"] = ""
             elif str(overrides.get("api_key", "")).strip():
@@ -146,6 +157,7 @@ class VoiceRuntime:
         if not 5 <= timeout <= 300:
             raise ValueError("语音请求超时必须在 5 到 300 秒之间")
         return VoiceConfig(
+            mode_enabled=current["mode_enabled"],
             provider=provider,
             api_key=api_key,
             app_id=app_id,
@@ -163,6 +175,8 @@ class VoiceRuntime:
     def public_config(self) -> dict[str, Any]:
         config = self.config()
         return {
+            "mode_enabled": config.mode_enabled,
+            "configured": config.configured,
             "provider": config.provider,
             "base_url": config.base_url,
             "stt_model": config.stt_model,
@@ -184,6 +198,7 @@ class VoiceRuntime:
         config = self.config(payload)
         self.store.set_app_settings(
             {
+                "voice_mode_enabled": str(config.mode_enabled).lower(),
                 "voice_provider": config.provider,
                 "voice_api_key": config.api_key,
                 "voice_app_id": config.app_id,
@@ -270,7 +285,8 @@ class VoiceRuntime:
         return audio, ALLOWED_AUDIO_FORMATS[config.audio_format]
 
     def test_connection(self, payload: dict[str, Any]) -> dict[str, Any]:
-        config = self.config(payload)
+        # An explicit admin connection test does not turn on user-facing voice.
+        config = self.config({**payload, "mode_enabled": True})
         if not config.enabled:
             raise ValueError("请先填写语音服务凭据、模型和音色")
         audio, content_type = self._synthesize_with_config("连接成功", config)
