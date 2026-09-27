@@ -3,6 +3,7 @@ const { get: uiText, format: formatText } = window.YingbanContent;
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
+let navigationVersion = 0;
 
 const state = {
   authenticated: false,
@@ -247,13 +248,12 @@ function showAuthenticated(me) {
   voiceButton.title = state.voiceSupported ? "语音输入" : "当前浏览器不支持录音";
   updateVoiceAutoPlayToggle();
   setVoiceMode(false);
-  if (state.onboardingStatus === "completed") {
-    navigate("home");
-  }
-  else openOnboarding();
+  restoreLocation();
 }
 
 function showLogin() {
+  navigationVersion += 1;
+  state.mode = null;
   state.authenticated = false;
   $("#login-view").hidden = false;
   $("#app-shell").hidden = true;
@@ -281,8 +281,37 @@ async function boot() {
   }
 }
 
-function navigate(view) {
+function syncLocation(route, replace = false) {
+  const hash = `#${route}`;
+  if (window.location.hash === hash) return;
+  window.history[replace ? "replaceState" : "pushState"](null, "", hash);
+}
+
+function restoreLocation() {
+  if (!state.authenticated) return;
+  navigationVersion += 1;
+  localConversationStore.writeCurrent($("#chat-input")?.value || "");
+  state.returnToChatFromHistory = false;
+  if (state.onboardingStatus !== "completed") {
+    openOnboarding({ replace: true });
+    return;
+  }
+  const route = window.location.hash.slice(1);
+  if (route === "discussion" || route === "recommendation") {
+    if (state.mode === route && state.currentConversationId) navigate("chat", { replace: true });
+    else openChat(route, null, { replace: true });
+    return;
+  }
+  navigate(route === "history" ? "history" : "home", { replace: true });
+}
+
+function navigate(view, options = {}) {
+  navigationVersion += 1;
   if (state.onboardingStatus !== "completed" && view !== "onboarding") view = "onboarding";
+  if (!$("#chat-view").hidden && view !== "chat") {
+    localConversationStore.writeCurrent($("#chat-input")?.value || "");
+  }
+  syncLocation(view === "chat" ? state.mode : view, options.replace);
   $$(".view").forEach((node) => { node.hidden = node.id !== `${view}-view`; });
   $$("[data-nav]").forEach((node) => node.classList.toggle("is-active", node.dataset.nav === view));
   if (view === "history") {
@@ -310,8 +339,8 @@ function navigatePrimary(view) {
   navigate(view);
 }
 
-async function openOnboarding() {
-  navigate("onboarding");
+async function openOnboarding(options = {}) {
+  navigate("onboarding", options);
   await Promise.all([loadOnboarding(), loadOnboardingCandidates()]);
 }
 
@@ -513,8 +542,10 @@ async function syncConversationRecord() {
 function renderSkillToolbar() {
   const toolbar = $("#skill-toolbar");
   if (!toolbar) return;
-  const active = enabledSkill(state.activeSkillKey);
   const discussion = state.mode === "discussion";
+  toolbar.hidden = !discussion;
+  if (!discussion) return;
+  const active = enabledSkill(state.activeSkillKey);
   $("#discussion-skill-actions").hidden = !discussion;
   $("#casual-chat-mode").setAttribute("aria-pressed", String(discussion && !active));
   $("#view-skill-records").hidden = !(
@@ -530,10 +561,8 @@ function renderSkillToolbar() {
     $("#active-skill-description").textContent = active.description;
     return;
   }
-  $("#active-skill-name").textContent = discussion ? "闲聊模式" : "常规选片";
-  $("#active-skill-description").textContent = discussion
-    ? "默认自由聊天；需要时再选择 Skill。"
-    : "院线新片 Skill 已停用，当前使用基础推荐能力。";
+  $("#active-skill-name").textContent = "闲聊模式";
+  $("#active-skill-description").textContent = "默认自由聊天；需要时再选择 Skill。";
 }
 
 function activateSkill(skillKey) {
@@ -557,6 +586,7 @@ function activateSkill(skillKey) {
 }
 
 async function openChat(mode, movie = null, options = {}) {
+  const requestVersion = ++navigationVersion;
   if (state.currentConversationId) {
     localConversationStore.writeCurrent($("#chat-input")?.value || "");
   }
@@ -565,6 +595,7 @@ async function openChat(mode, movie = null, options = {}) {
     state.openings = { ...state.openings, ...(me.openings || {}) };
     state.skills = Array.isArray(me.skills) ? me.skills : state.skills;
   } catch { /* keep the last known openings */ }
+  if (requestVersion !== navigationVersion || !state.authenticated) return;
   const restored = options.conversation || null;
   state.returnToChatFromHistory = false;
   state.mode = mode;
@@ -595,7 +626,7 @@ async function openChat(mode, movie = null, options = {}) {
     ? ["我很喜欢，但说不上为什么", "有个地方我一直没看懂", "结局让我有点难受"]
     : ["最近压力很大，想放松", "想看一部能给我力量的", "不要爱情片，想看点烧脑的"]
   );
-  navigate("chat");
+  navigate("chat", options);
   const opening = discussion
     ? (state.selectedMovie ? state.openings.discussion_movie.replaceAll("{movie}", state.selectedMovie.title_zh) : state.openings.discussion)
     : state.openings.recommendation;
@@ -1849,6 +1880,8 @@ async function logout(clearDrafts) {
 $("#logout-button").addEventListener("click", () => $("#logout-dialog").showModal());
 $("#logout-keep-drafts").addEventListener("click", () => logout(false).catch((error) => showToast(error.message)));
 $("#logout-clear-drafts").addEventListener("click", () => logout(true).catch((error) => showToast(error.message)));
+
+window.addEventListener("hashchange", restoreLocation);
 
 $("#brand-home").addEventListener("click", () => {
   state.returnToChatFromHistory = false;

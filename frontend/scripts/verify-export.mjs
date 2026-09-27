@@ -6,7 +6,7 @@ const pages = [
     source: "index.html",
     output: "index.html",
     bodyClass: null,
-    assets: ["/styles.css?v=27", "/ui-content.js?v=1", "/movie-components.js?v=2", "/app.js?v=36"],
+    assets: ["/styles.css?v=27", "/ui-content.js?v=1", "/movie-components.js?v=2", "/app.js?v=38"],
   },
   {
     source: "admin.html",

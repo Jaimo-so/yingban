@@ -834,7 +834,7 @@ class StageTenProductTests(ProductFixture):
         self.assertIn('state.skills = Array.isArray(me.skills) ? me.skills : state.skills;', script)
         self.assertIn('error.message === "请求的 Skill 不存在、已停用或不属于当前模块"', script)
         self.assertIn('body: JSON.stringify({ ...payload, skill_key: null })', script)
-        self.assertIn('/app.js?v=36', html)
+        self.assertIn('/app.js?v=38', html)
 
 
 class AgentConfigurationTests(ProductFixture):
@@ -1480,7 +1480,7 @@ class IntegrationConfigurationTests(ProductFixture):
         self.assertIn('status === "unavailable"', components)
         content = json.loads((PRODUCT_DIR / "web" / "ui-content.json").read_text(encoding="utf-8"))
         self.assertEqual(content["search"]["unavailable"], "电影搜索服务暂时不可用，请稍后重试。")
-        self.assertLess(html.index('/movie-components.js?v=2'), html.index('/app.js?v=36'))
+        self.assertLess(html.index('/movie-components.js?v=2'), html.index('/app.js?v=38'))
 
     def test_tmdb_result_is_persisted_with_a_real_poster_url(self) -> None:
         internet = InternetRuntime(self.settings, self.store)
@@ -2476,7 +2476,7 @@ class ProductSkillTests(ProductFixture):
         self.assertIn(".weekly-movie > div:not(.poster)", styles)
         self.assertNotIn(".weekly-movie > div {", styles)
         self.assertIn('/styles.css?v=27', html)
-        self.assertIn('/app.js?v=36', html)
+        self.assertIn('/app.js?v=38', html)
 
 
 class HTTPFlowTests(ProductFixture):
