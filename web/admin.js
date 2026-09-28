@@ -297,6 +297,7 @@ function renderAgentConfig(config) {
   openingDefaults = config.opening_defaults || {};
   $("#model-provider").value = model.provider;
   $("#model-id").value = model.model_id;
+  $("#model-state-classifier-id").value = model.movie_state_model_override || "";
   $("#model-base-url").value = model.base_url;
   $("#model-timeout").value = model.timeout_seconds;
   $("#model-max-tokens").value = model.max_tokens;
@@ -749,6 +750,15 @@ function renderModelStatus(model) {
   const active = model.mode === "model";
   status.className = `connection-status ${active ? "status-model" : "status-demo"}`;
   status.textContent = active ? `已接入 · ${model.model_id}` : "演示模式";
+  const autoEnabled = model.movie_state_auto_enabled !== false;
+  $("#model-state-classifier-enabled").checked = autoEnabled;
+  $("#model-state-classifier-status").textContent = !autoEnabled
+    ? "自动判断已关闭；用户仍可手动加入“看过”或“想看”。"
+    : active && model.movie_state_model_id
+      ? `自动判断已开启 · 当前使用 ${model.movie_state_model_id}；只有明确判断才会写入。`
+      : active
+        ? "自动判断已开启，但当前接口未配置判断小模型；聊天不会自动写入观影状态。"
+        : "自动判断已开启；演示模式只识别明确的“看过”或“想看”表达。";
 }
 
 function updateProviderHelp(applyDefaults = false) {
@@ -763,8 +773,16 @@ function updateProviderHelp(applyDefaults = false) {
     ? "可选择三款文本模型或返回文本的 StepAudio 2.5 Chat。"
     : "输入当前服务商支持的模型 ID。";
   renderDataList("#model-id-options", stepfun ? modelsFor("text", "audio_chat") : []);
+  renderDataList("#model-state-classifier-options", stepfun ? modelsFor("text") : []);
+  const classifierDefault = provider === "anthropic" ? "claude-haiku-4-5-20251001"
+    : stepfun ? "step-3.5-flash-2603" : "";
+  $("#model-state-classifier-id").placeholder = classifierDefault || "填写当前接口支持的小模型 ID";
+  $("#model-state-classifier-help").textContent = classifierDefault
+    ? `留空使用 ${classifierDefault}；只判断看过、想看或不改状态。`
+    : "自定义兼容接口须填写支持的小模型 ID；留空则不自动写入观影状态。";
   renderBaseUrlPicker("model", provider, $("#model-base-url").value, applyDefaults);
   if (applyDefaults) {
+    $("#model-state-classifier-id").value = "";
     if (provider === "anthropic") {
       $("#model-id").value = "claude-sonnet-4-6";
     } else if (stepfun) {
@@ -781,6 +799,8 @@ function modelPayload() {
     api_key: $("#model-api-key").value.trim(),
     clear_api_key: $("#clear-api-key").checked,
     model_id: $("#model-id").value.trim(),
+    movie_state_model_id: $("#model-state-classifier-id").value.trim(),
+    movie_state_auto_enabled: $("#model-state-classifier-enabled").checked,
     base_url: $("#model-base-url").value.trim(),
     timeout_seconds: Number($("#model-timeout").value),
     max_tokens: Number($("#model-max-tokens").value),

@@ -1736,16 +1736,28 @@ class YingbanHandler(BaseHTTPRequestHandler):
                 )
                 return
 
-        if mode == "discussion" and selected_movie is not None:
-            _state, watched_changed = self.app.store.transition_movie_state(
-                account_id, selected_movie["id"], "watched", "discussion"
-            )
-            if watched_changed:
-                memory_event = {
-                    "type": "watched",
-                    "message": f"已把《{selected_movie['title_zh']}》加入看过列表",
-                    "movie_id": selected_movie["id"],
-                }
+        mentioned_movies = self.app.catalog.detect_in_text(message)
+        state_movie = (
+            mentioned_movies[0] if len(mentioned_movies) == 1
+            else selected_movie if not mentioned_movies else None
+        )
+        if state_movie is not None:
+            inferred_state = self.app.agent.classify_movie_state(message, state_movie)
+            previous_state = self.app.store.get_movie_state(account_id, state_movie["id"])
+            # An ambiguous wish to rewatch must not erase a confirmed viewing.
+            if inferred_state == "watchlist" and previous_state and previous_state["state"] == "watched":
+                inferred_state = None
+            if inferred_state in {"watched", "watchlist"}:
+                _state, changed = self.app.store.transition_movie_state(
+                    account_id, state_movie["id"], inferred_state, "chat_state_agent"
+                )
+                if changed:
+                    label = "看过" if inferred_state == "watched" else "想看"
+                    memory_event = {
+                        "type": inferred_state,
+                        "message": f"已把《{state_movie['title_zh']}》加入{label}列表",
+                        "movie_id": state_movie["id"],
+                    }
 
         candidates: list[dict[str, Any]] = []
         candidate_scope = "none"
@@ -1817,21 +1829,6 @@ class YingbanHandler(BaseHTTPRequestHandler):
                 HTTPStatus.BAD_GATEWAY,
             )
             return
-
-        if mode == "discussion" and selected_movie is None:
-            marked_movie = agent_activity.get("marked_movie")
-            marked_movie_id = str(marked_movie.get("id", "")) if isinstance(marked_movie, dict) else ""
-            if marked_movie_id:
-                selected_movie = self.app.store.movie(marked_movie_id)
-                if (
-                    selected_movie is not None
-                    and agent_activity.get("marked_movie_changed") is True
-                ):
-                    memory_event = {
-                        "type": "watched",
-                        "message": f"已把《{selected_movie['title_zh']}》加入看过列表",
-                        "movie_id": selected_movie["id"],
-                    }
 
         for movie in candidates:
             self.app.store.record_product_event(

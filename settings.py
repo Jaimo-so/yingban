@@ -134,6 +134,7 @@ class Settings:
     model_id: str = _DEFAULT_MODEL_ID
     model_base_url: str = _DEFAULT_MODEL_BASE_URL.rstrip("/")
     model_timeout_seconds: float = float(os.getenv("MODEL_TIMEOUT_SECONDS", "60"))
+    movie_state_model_id: str = os.getenv("MOVIE_STATE_MODEL_ID", "").strip()
     tmdb_api_key: str = os.getenv("TMDB_API_KEY", "")
     tmdb_base_url: str = os.getenv(
         "TMDB_BASE_URL", "https://api.themoviedb.org/3"

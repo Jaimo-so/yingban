@@ -11,6 +11,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+from dataclasses import replace
 from io import BytesIO
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -851,9 +852,12 @@ class AgentConfigurationTests(ProductFixture):
         self.assertIn("允许直接说“我不太同意”", DISCUSSION_AGENT_PROMPT)
         self.assertIn("和用户一起缩小范围", RECOMMENDATION_AGENT_PROMPT)
 
-    def test_agent_reports_the_movie_marked_watched_by_a_tool_call(self) -> None:
+    def test_movie_state_agent_requires_quoted_evidence_and_fails_closed(self) -> None:
         account_id, _ = self.store.login_with_invite(self.store.generate_invites(1)[0], 30)
-        runtime = AgentRuntime(self.settings, self.store, self.catalog)
+        runtime = AgentRuntime(
+            replace(self.settings, movie_state_model_id="test-mini-model"),
+            self.store, self.catalog,
+        )
         runtime.save_model_config(
             {
                 "provider": "openai_compatible",
@@ -865,38 +869,93 @@ class AgentConfigurationTests(ProductFixture):
                 "temperature": 0.4,
             }
         )
-        responses = iter(
-            [
-                {
-                    "content": [
-                        {
-                            "type": "tool_use",
-                            "id": "tool-mark-watched",
-                            "name": "mark_movie_watched",
-                            "input": {"movie_id": "us-interstellar-2014", "source": "discussion"},
-                        }
-                    ],
-                    "usage": {},
-                },
-                {"content": [{"type": "text", "text": "那我们就接着聊这部。"}], "usage": {}},
-            ]
-        )
-        activity: dict[str, Any] = {}
+        movie = self.store.movie("us-interstellar-2014") or {}
+        with patch.object(ModelMessageClient, "create", autospec=True, return_value={
+            "content": [{"type": "text", "text": '{"state":"watched","evidence":"我还没看"}'}],
+            "usage": {},
+        }) as create:
+            self.assertIsNone(runtime.classify_movie_state("我还没看，就想聊一聊", movie))
+            self.assertEqual(create.call_args.args[0].config.temperature, 0)
+            self.assertEqual(create.call_args.args[0].config.model_id, "test-mini-model")
+        with patch.object(ModelMessageClient, "create", autospec=True, return_value={
+            "content": [{"type": "text", "text": '{"state":"watchlist","evidence":"我想看这部"}'}],
+            "usage": {},
+        }):
+            self.assertEqual(runtime.classify_movie_state("我想看这部", movie), "watchlist")
+        with patch.object(ModelMessageClient, "create", autospec=True, return_value={
+            "content": [{"type": "text", "text": '{"state":"watchlist","evidence":"先放到下周末的片单里"}'}],
+            "usage": {},
+        }):
+            self.assertEqual(runtime.classify_movie_state("先放到下周末的片单里", movie), "watchlist")
+        scene = "书架后面他喊女儿别走的那一幕，我现在想起来还难受"
+        with patch.object(ModelMessageClient, "create", autospec=True, return_value={
+            "content": [{"type": "text", "text": json.dumps({
+                "state": "watched", "evidence": "书架后面他喊女儿别走的那一幕"
+            }, ensure_ascii=False)}],
+            "usage": {},
+        }) as create:
+            self.assertEqual(runtime.classify_movie_state(scene, movie), "watched")
+            self.assertIn("具体片段", create.call_args.args[1])
+        with patch.object(ModelMessageClient, "create", autospec=True, return_value={
+            "content": [{"type": "text", "text": '{"state":"watched","evidence":"我没看懂书架那段"}'}],
+            "usage": {},
+        }):
+            self.assertEqual(runtime.classify_movie_state("我没看懂书架那段，但我看完了", movie), "watched")
+        with patch.object(ModelMessageClient, "create", autospec=True, return_value={
+            "content": [{"type": "text", "text": '{"state":"watched","evidence":"不存在的原文"}'}],
+            "usage": {},
+        }):
+            self.assertIsNone(runtime.classify_movie_state("我看过了", movie))
+        with patch.object(ModelMessageClient, "create", autospec=True, side_effect=TimeoutError):
+            self.assertIsNone(runtime.classify_movie_state("我看过了", movie))
+        self.assertIsNone(self.store.get_movie_state(account_id, movie["id"]))
 
-        with patch.object(ModelMessageClient, "create", autospec=True, side_effect=lambda *_args, **_kwargs: next(responses)):
-            reply = runtime.respond(
-                account_id,
-                "discussion",
-                "就是刚才那部",
-                [],
-                None,
-                True,
-                [],
-                activity=activity,
-            )
+    def test_movie_state_agent_selects_a_small_model_for_supported_providers(self) -> None:
+        runtime = AgentRuntime(self.settings, self.store, self.catalog)
+        runtime.save_model_config({
+            "provider": "stepfun", "api_key": "stepfun-small-model-test",
+            "model_id": "step-3.7-flash",
+            "base_url": "https://api.stepfun.com/step_plan/v1",
+            "timeout_seconds": 45, "max_tokens": 1200, "temperature": 0.7,
+        })
+        movie = self.store.movie("us-interstellar-2014") or {}
+        with patch.object(ModelMessageClient, "create", autospec=True, return_value={
+            "content": [{"type": "text", "text": '{"state":"none","evidence":""}'}],
+            "usage": {},
+        }) as create:
+            self.assertIsNone(runtime.classify_movie_state("我想聊聊这部", movie))
+            self.assertEqual(create.call_args.args[0].config.model_id, "step-3.5-flash-2603")
+            self.assertLessEqual(create.call_args.args[0].config.timeout_seconds, 20)
+        runtime.save_model_config({
+            "provider": "anthropic", "api_key": "anthropic-small-model-test",
+            "model_id": "claude-sonnet-4-6",
+            "base_url": "https://api.anthropic.com",
+            "timeout_seconds": 45, "max_tokens": 1200, "temperature": 0.7,
+        })
+        self.assertEqual(runtime.movie_state_model_id(), "claude-haiku-4-5-20251001")
 
-        self.assertEqual(reply, "那我们就接着聊这部。")
-        self.assertEqual(activity["marked_movie"]["id"], "us-interstellar-2014")
+    def test_admin_can_disable_and_reenable_automatic_movie_state(self) -> None:
+        runtime = AgentRuntime(self.settings, self.store, self.catalog)
+        config = {
+            "provider": "anthropic", "api_key": "small-model-toggle-test",
+            "model_id": "claude-sonnet-4-6", "base_url": "https://api.anthropic.com",
+            "timeout_seconds": 30, "max_tokens": 1200, "temperature": 0.7,
+        }
+        disabled = runtime.save_model_config({**config, "movie_state_auto_enabled": False})
+        self.assertFalse(disabled["movie_state_auto_enabled"])
+        movie = self.store.movie("us-interstellar-2014") or {}
+        with patch.object(ModelMessageClient, "create", autospec=True) as create:
+            self.assertIsNone(runtime.classify_movie_state("我想看这部", movie))
+            create.assert_not_called()
+        self.assertFalse(AgentRuntime(self.settings, self.store, self.catalog).movie_state_auto_enabled())
+        enabled = runtime.save_model_config({**config, "movie_state_auto_enabled": True})
+        self.assertTrue(enabled["movie_state_auto_enabled"])
+        with patch.object(ModelMessageClient, "create", autospec=True, return_value={
+            "content": [{"type": "text", "text": '{"state":"watchlist","evidence":"我想看这部"}'}],
+            "usage": {},
+        }) as create:
+            self.assertEqual(runtime.classify_movie_state("我想看这部", movie), "watchlist")
+            create.assert_called_once()
 
     def test_reflection_keeps_early_short_user_feedback_without_using_ai_as_evidence(self) -> None:
         runtime = AgentRuntime(self.settings, self.store, self.catalog)
@@ -963,6 +1022,7 @@ class AgentConfigurationTests(ProductFixture):
                 "provider": "openai_compatible",
                 "api_key": "sk-test-secret-1234",
                 "model_id": "test-chat-model",
+                "movie_state_model_id": "test-mini-model",
                 "base_url": "https://models.example.com/v1",
                 "timeout_seconds": 45,
                 "max_tokens": 1600,
@@ -972,12 +1032,15 @@ class AgentConfigurationTests(ProductFixture):
 
         self.assertTrue(saved["has_api_key"])
         self.assertEqual(saved["api_key_hint"], "••••1234")
+        self.assertEqual(saved["movie_state_model_id"], "test-mini-model")
+        self.assertEqual(saved["movie_state_model_override"], "test-mini-model")
         self.assertNotIn("sk-test-secret", json.dumps(saved, ensure_ascii=False))
 
         reloaded = AgentRuntime(self.settings, self.store, self.catalog).model_config()
         self.assertEqual(reloaded.provider, "openai_compatible")
         self.assertEqual(reloaded.api_key, "sk-test-secret-1234")
         self.assertEqual(reloaded.model_id, "test-chat-model")
+        self.assertEqual(runtime.movie_state_model_id(), "test-mini-model")
 
     def test_stepfun_text_models_use_step_plan_chat_completions_and_are_selectable(self) -> None:
         runtime = AgentRuntime(self.settings, self.store, self.catalog)
@@ -1054,7 +1117,10 @@ class AgentConfigurationTests(ProductFixture):
             self.assertIn(base_url, admin_script)
         self.assertIn('const CUSTOM_BASE_URL = "__custom__"', admin_script)
         self.assertIn("全部厂家始终显示并按协议分组", admin_html)
-        self.assertIn('admin.js?v=24', admin_html)
+        self.assertIn('admin.js?v=26', admin_html)
+        self.assertIn('id="model-state-classifier-id"', admin_html)
+        self.assertIn('id="model-state-classifier-enabled"', admin_html)
+        self.assertIn('movie_state_auto_enabled: $("#model-state-classifier-enabled").checked', admin_script)
 
     def test_stage_thirty_nine_admin_prompt_and_skill_management_use_name_selectors(self) -> None:
         admin_html = (PRODUCT_DIR / "web" / "admin.html").read_text(encoding="utf-8")
@@ -1073,7 +1139,7 @@ class AgentConfigurationTests(ProductFixture):
         self.assertIn("button.dataset.skillTarget = skill.skill_key", admin_script)
         self.assertIn(".management-selector.is-active", admin_css)
         self.assertIn('/admin.css?v=20', admin_html)
-        self.assertIn('/admin.js?v=24', admin_html)
+        self.assertIn('/admin.js?v=26', admin_html)
 
     def test_stage_forty_three_skill_editor_focuses_on_instructions(self) -> None:
         admin_html = (PRODUCT_DIR / "web" / "admin.html").read_text(encoding="utf-8")
@@ -1088,7 +1154,7 @@ class AgentConfigurationTests(ProductFixture):
         self.assertIn("input_contract: inputContract", admin_script)
         self.assertIn("output_contract: outputContract", admin_script)
         self.assertIn('/admin.css?v=20', admin_html)
-        self.assertIn('/admin.js?v=24', admin_html)
+        self.assertIn('/admin.js?v=26', admin_html)
 
     def test_stage_forty_two_current_docs_match_server_chat_persistence(self) -> None:
         app_script = (PRODUCT_DIR / "web" / "app.js").read_text(encoding="utf-8")
@@ -1136,7 +1202,7 @@ class AgentConfigurationTests(ProductFixture):
         self.assertIn("panel.hidden = panel.dataset.apiPanel !== apiKey", admin_script)
         self.assertIn(".api-selector-list .management-selector", admin_css)
         self.assertIn('/admin.css?v=20', admin_html)
-        self.assertIn('/admin.js?v=24', admin_html)
+        self.assertIn('/admin.js?v=26', admin_html)
 
     def test_model_manufacturer_picker_groups_all_protocols_and_switches_automatically(self) -> None:
         admin_html = (PRODUCT_DIR / "web" / "admin.html").read_text(encoding="utf-8")
@@ -1218,19 +1284,6 @@ class AgentConfigurationTests(ProductFixture):
 
 
 class IntegrationConfigurationTests(ProductFixture):
-    def test_mark_movie_watched_reports_only_a_real_state_transition(self) -> None:
-        account_id, _ = self.store.login_with_invite(self.store.generate_invites(1)[0], 30)
-        tools = BoundMovieTools(self.store, self.catalog, account_id)
-
-        first = tools.mark_movie_watched("us-interstellar-2014", "discussion")
-        first_state = self.store.get_movie_state(account_id, "us-interstellar-2014")
-        second = tools.mark_movie_watched("us-interstellar-2014", "discussion")
-        second_state = self.store.get_movie_state(account_id, "us-interstellar-2014")
-
-        self.assertIs(first["changed"], True)
-        self.assertIs(second["changed"], False)
-        self.assertEqual(second_state, first_state)
-
     def test_tmdb_retries_directly_when_the_environment_proxy_tunnel_fails(self) -> None:
         class FakeResponse:
             def __enter__(self):
@@ -2918,39 +2971,99 @@ class HTTPFlowTests(ProductFixture):
         self.assertEqual(expired.status_code, 404)
         self.assertEqual(fetch.call_count, 2)
 
-    def test_discussion_auto_marks_movie_watched(self) -> None:
+    def test_discussion_movie_state_requires_explicit_user_intent(self) -> None:
         self.login()
         account_id = str(self.store.list_invites()[0]["account_id"])
+        movie_id = "us-interstellar-2014"
         response = self.request(
             "/api/chat",
             "POST",
             {
                 "mode": "discussion",
-                "message": "我刚看完星际穿越，心里有点堵",
+                "message": "我想聊聊星际穿越",
                 "history": [],
                 "spoilers_allowed": True,
             },
         )
-        self.assertEqual(response["selected_movie"]["id"], "us-interstellar-2014")
-        self.assertEqual(response["memory_event"]["type"], "watched")
-        history = self.request("/api/history?state=watched")
-        self.assertEqual([item["movie_id"] for item in history["items"]], ["us-interstellar-2014"])
+        self.assertEqual(response["selected_movie"]["id"], movie_id)
+        self.assertIsNone(response["memory_event"])
+        self.assertIsNone(self.store.get_movie_state(account_id, movie_id))
 
-        first_state = self.store.get_movie_state(account_id, "us-interstellar-2014")
-        follow_up = self.request(
+        not_seen = self.request(
             "/api/chat",
             "POST",
             {
                 "mode": "discussion",
-                "message": "我还在想它最后留下的那种感觉",
+                "message": "我还没看，就想聊一聊",
                 "history": [],
-                "selected_movie_id": "us-interstellar-2014",
+                "selected_movie_id": movie_id,
                 "spoilers_allowed": True,
             },
         )
-        self.assertIsNone(follow_up["memory_event"])
-        second_state = self.store.get_movie_state(account_id, "us-interstellar-2014")
-        self.assertEqual(second_state, first_state)
+        self.assertIsNone(not_seen["memory_event"])
+        self.assertIsNone(self.store.get_movie_state(account_id, movie_id))
+
+        wants_to_watch = self.request(
+            "/api/chat", "POST", {
+                "mode": "discussion", "message": "我想看这部",
+                "history": [], "selected_movie_id": movie_id,
+            },
+        )
+        self.assertEqual(wants_to_watch["memory_event"]["type"], "watchlist")
+        self.assertEqual(self.store.get_movie_state(account_id, movie_id)["state"], "watchlist")
+
+        watched = self.request(
+            "/api/chat", "POST", {
+                "mode": "discussion", "message": "我刚看完星际穿越，心里有点堵",
+                "history": [], "selected_movie_id": movie_id,
+            },
+        )
+        self.assertEqual(watched["memory_event"]["type"], "watched")
+        first_state = self.store.get_movie_state(account_id, movie_id)
+        self.assertEqual(first_state["state"], "watched")
+
+        rewatch = self.request(
+            "/api/chat", "POST", {
+                "mode": "discussion", "message": "我想再看一遍",
+                "history": [], "selected_movie_id": movie_id,
+            },
+        )
+        self.assertIsNone(rewatch["memory_event"])
+        self.assertEqual(self.store.get_movie_state(account_id, movie_id), first_state)
+
+    def test_discussing_a_specific_scene_uses_small_model_to_mark_watched(self) -> None:
+        self.login()
+        account_id = str(self.store.list_invites()[0]["account_id"])
+        movie_id = "us-interstellar-2014"
+        self.server.app.agent.settings = replace(
+            self.server.app.agent.settings, movie_state_model_id="scene-mini-model"
+        )
+        self.server.app.agent.save_model_config({
+            "provider": "openai_compatible", "api_key": "scene-model-test-key",
+            "model_id": "conversation-model", "base_url": "https://models.example.com/v1",
+            "timeout_seconds": 30, "max_tokens": 1200, "temperature": 0.7,
+        })
+        scene = "书架后面他喊女儿别走的那一幕，我现在想起来还难受"
+
+        def fake_create(
+            client: ModelMessageClient, system: str,
+            messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None,
+        ) -> dict[str, Any]:
+            if "观影状态判断器" in system:
+                self.assertEqual(client.config.model_id, "scene-mini-model")
+                self.assertIsNone(tools)
+                return {"content": [{"type": "text", "text": json.dumps({
+                    "state": "watched", "evidence": "书架后面他喊女儿别走的那一幕"
+                }, ensure_ascii=False)}], "usage": {}}
+            return {"content": [{"type": "text", "text": "那一幕的停顿确实很重。"}], "usage": {}}
+
+        with patch.object(ModelMessageClient, "create", autospec=True, side_effect=fake_create):
+            response = self.request("/api/chat", "POST", {
+                "mode": "discussion", "message": scene, "history": [],
+                "selected_movie_id": movie_id,
+            })
+        self.assertEqual(response["memory_event"]["type"], "watched")
+        self.assertEqual(self.store.get_movie_state(account_id, movie_id)["state"], "watched")
 
     def test_discussion_without_skill_stays_in_casual_mode(self) -> None:
         self.login()
@@ -3034,59 +3147,22 @@ class HTTPFlowTests(ProductFixture):
         self.assertEqual(decision["candidate_scope"], "catalog_fallback")
         self.assertTrue(decision["recommendations"])
 
-    def test_discussion_returns_the_movie_marked_by_the_agent_tool(self) -> None:
+    def test_recommendation_named_movie_can_be_marked_watched(self) -> None:
         self.login()
-
-        tool_call_count = 0
-
-        def mark_during_reply(
-            account_id: str,
-            _mode: str,
-            _message: str,
-            _history: list[dict[str, str]],
-            _selected_movie: dict | None,
-            _spoilers_allowed: bool,
-            _candidates: list[dict],
-            activity: dict | None = None,
-        ) -> str:
-            nonlocal tool_call_count
-            tool_call_count += 1
-            movie = self.store.movie("us-interstellar-2014") or {}
-            changed = tool_call_count == 1
-            if changed:
-                self.store.set_movie_state(account_id, movie["id"], "watched", "discussion")
-            if activity is not None:
-                activity["marked_movie"] = movie
-                activity["marked_movie_changed"] = changed
-            return "那我们接着聊这部。"
-
-        self.server.app.agent.respond = mark_during_reply
+        account_id = str(self.store.list_invites()[0]["account_id"])
         response = self.request(
             "/api/chat",
             "POST",
             {
-                "mode": "discussion",
-                "message": "就是刚才说的那部",
+                "mode": "recommendation",
+                "message": "《星际穿越》我看过了，换一部",
                 "history": [],
-                "spoilers_allowed": True,
             },
         )
-
-        self.assertEqual(response["selected_movie"]["id"], "us-interstellar-2014")
+        self.assertEqual(response["memory_event"]["type"], "watched")
         self.assertEqual(response["memory_event"]["movie_id"], "us-interstellar-2014")
-
-        follow_up = self.request(
-            "/api/chat",
-            "POST",
-            {
-                "mode": "discussion",
-                "message": "还是刚才那部",
-                "history": [],
-                "spoilers_allowed": True,
-            },
-        )
-        self.assertEqual(follow_up["selected_movie"]["id"], "us-interstellar-2014")
-        self.assertIsNone(follow_up["memory_event"])
+        self.assertEqual(self.store.get_movie_state(account_id, "us-interstellar-2014")["state"], "watched")
+        self.assertNotIn("us-interstellar-2014", {item["id"] for item in response["recommendations"]})
 
     def test_new_account_completes_single_movie_onboarding(self) -> None:
         self.login()

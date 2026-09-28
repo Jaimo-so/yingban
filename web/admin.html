@@ -167,6 +167,19 @@
               <small id="model-id-help">可输入服务商支持的模型 ID；阶跃星辰会提供当前已接入的模型选项。</small>
             </div>
             <div class="field">
+              <label for="model-state-classifier-id">观影状态判断小模型</label>
+              <input id="model-state-classifier-id" list="model-state-classifier-options" maxlength="200">
+              <datalist id="model-state-classifier-options"></datalist>
+              <small id="model-state-classifier-help">留空使用当前接口的默认轻量模型。</small>
+            </div>
+            <div class="field field-wide">
+              <label class="inline-check" for="model-state-classifier-enabled">
+                <input id="model-state-classifier-enabled" type="checkbox" checked>
+                <span>启用观影状态自动判断</span>
+              </label>
+              <small id="model-state-classifier-status">判断明确时自动加入“看过”或“想看”；关闭后只保留用户手动操作。</small>
+            </div>
+            <div class="field">
               <label for="model-base-url-preset">厂家与接口根地址</label>
               <select id="model-base-url-preset" required></select>
               <small>全部厂家始终显示并按协议分组；选择后会自动切换协议并填写根地址。</small>
@@ -607,6 +620,6 @@
     </dialog>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/admin.js?v=24" defer></script>
+    <script src="/admin.js?v=26" defer></script>
   </body>
 </html>

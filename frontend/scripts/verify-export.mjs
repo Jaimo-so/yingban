@@ -12,7 +12,7 @@ const pages = [
     source: "admin.html",
     output: "admin.html",
     bodyClass: "admin-body",
-    assets: ["/styles.css?v=31", "/admin.css?v=20", "/admin.js?v=24"],
+    assets: ["/styles.css?v=31", "/admin.css?v=20", "/admin.js?v=26"],
   },
   {
     source: "share.html",

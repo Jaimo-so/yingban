@@ -36,7 +36,7 @@ const state = {
   voiceAutoPlay: readVoiceAutoPlayPreference(),
   openings: {
     discussion: "我在。片名告诉我就好；有同名版本的话，我们再一起确认。",
-    discussion_movie: "嗯，《{movie}》。先不急着分析，你看完后脑子里冒出来的第一句话是什么？",
+    discussion_movie: "嗯，《{movie}》。你想先从哪里聊起？",
     recommendation: "今晚想让电影替你做什么？放松一下、陪你待会儿，还是换个角度看看最近的一件事？",
   },
   reflectionMovie: null,
@@ -639,9 +639,9 @@ async function openChat(mode, movie = null, options = {}) {
   renderSkillToolbar();
 
   const discussion = mode === "discussion";
-  $("#chat-kicker").textContent = discussion ? "散场之后" : "下一部电影";
-  $("#chat-title").textContent = discussion ? (state.selectedMovie ? `聊聊《${state.selectedMovie.title_zh}》` : "刚看完哪一部？") : "此刻想看点什么？";
-  $("#chat-input").placeholder = discussion ? "片名，或者看完后的第一句话……" : "说说此刻的心情、口味或最近的烦恼……";
+  $("#chat-kicker").textContent = discussion ? "聊聊电影" : "下一部电影";
+  $("#chat-title").textContent = discussion ? (state.selectedMovie ? `聊聊《${state.selectedMovie.title_zh}》` : "想聊哪一部？") : "此刻想看点什么？";
+  $("#chat-input").placeholder = discussion ? "片名，或者你想聊的第一句话……" : "说说此刻的心情、口味或最近的烦恼……";
   renderChips(discussion
     ? ["我很喜欢，但说不上为什么", "有个地方我一直没看懂", "结局让我有点难受"]
     : ["最近压力很大，想放松", "想看一部能给我力量的", "不要爱情片，想看点烧脑的"]
@@ -2026,7 +2026,7 @@ $("#casual-chat-mode").addEventListener("click", () => {
   localConversationStore.writeCurrent($("#chat-input")?.value || "");
   renderSkillToolbar();
   renderChips(["我很喜欢，但说不上为什么", "有个地方我一直没看懂", "结局让我有点难受"]);
-  $("#chat-input").placeholder = "片名，或者看完后的第一句话……";
+  $("#chat-input").placeholder = "片名，或者你想聊的第一句话……";
   showToast("已切换到闲聊模式");
 });
 $("#view-skill-records").addEventListener("click", () => {
