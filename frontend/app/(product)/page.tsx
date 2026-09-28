@@ -7,7 +7,7 @@ export default function ProductPage() {
   return (
     <>
       <LegacyMarkup html={readLegacyBody("index.html")} />
-      <Script src="/app.js?v=42" strategy="afterInteractive" />
+      <Script src="/app.js?v=44" strategy="afterInteractive" />
     </>
   );
 }

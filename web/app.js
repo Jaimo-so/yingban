@@ -2302,7 +2302,6 @@ function renderPersonalHome(data) {
   $("#profile-avatar").textContent = PROFILE_AVATARS[key];
   $("#profile-title").textContent = profile.nickname || "我的主页";
   $("#profile-bio").textContent = profile.bio || "还没写下简介。可以从一句喜欢的电影台词开始。";
-  $("#profile-account-id").textContent = `影伴 ID · ${profile.id}`;
   $("#profile-login-account").textContent = state.localOpenAccess ? `本机账户 · ID ${profile.id}`
     : profile.username ? `登录用户名：${profile.username} · 昵称修改不影响登录` : `邀请码账户 · ID ${profile.id}`;
   $("#profile-logout").hidden = state.localOpenAccess;

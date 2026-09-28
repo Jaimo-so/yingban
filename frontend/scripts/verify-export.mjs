@@ -6,19 +6,19 @@ const pages = [
     source: "index.html",
     output: "index.html",
     bodyClass: null,
-    assets: ["/styles.css?v=30", "/ui-content.js?v=1", "/movie-components.js?v=2", "/app.js?v=42"],
+    assets: ["/styles.css?v=31", "/ui-content.js?v=1", "/movie-components.js?v=2", "/app.js?v=44"],
   },
   {
     source: "admin.html",
     output: "admin.html",
     bodyClass: "admin-body",
-    assets: ["/styles.css?v=30", "/admin.css?v=20", "/admin.js?v=24"],
+    assets: ["/styles.css?v=31", "/admin.css?v=20", "/admin.js?v=24"],
   },
   {
     source: "share.html",
     output: "share.html",
     bodyClass: "share-page",
-    assets: ["/styles.css?v=30", "/share-card.js?v=14", "/share.js?v=12"],
+    assets: ["/styles.css?v=31", "/share-card.js?v=14", "/share.js?v=12"],
   },
 ];
 
