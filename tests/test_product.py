@@ -2516,6 +2516,19 @@ class HTTPFlowTests(ProductFixture):
         self.assertTrue(result["ok"])
         return code
 
+    def test_credentials_in_home_url_are_redirected_and_forms_never_get_submit(self) -> None:
+        response = self.client.get(
+            "/?username=example&password=example-secret#home", follow_redirects=False
+        )
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers["location"], "/")
+        self.assertEqual(response.headers["referrer-policy"], "no-referrer")
+        self.assertEqual(self.client.get("/?campaign=home", follow_redirects=False).status_code, 200)
+        html = (PRODUCT_DIR / "web" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('<form id="login-form" method="post" action="/api/auth/login">', html)
+        self.assertIn('<form id="register-form" method="post" action="/api/auth/register" hidden>', html)
+        self.assertIn('window.history.replaceState(null, "", window.location.pathname + window.location.hash)', html)
+
     def test_feedback_is_authenticated_and_source_is_bound_to_session(self) -> None:
         payload = {"kind": "problem", "content": "播放时没有声音", "source_page": "discussion"}
         self.assertEqual(self.client.post("/api/feedback", json=payload).status_code, 401)

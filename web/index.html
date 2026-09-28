@@ -4,8 +4,15 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="影伴——记得你看过什么的 AI 电影伙伴。">
+    <meta name="referrer" content="no-referrer">
     <title>影伴 · 你的电影搭子</title>
     <script>
+      if (window.location.search) {
+        const params = new URLSearchParams(window.location.search);
+        if ([...params.keys()].some((key) => ["username", "password", "confirm_password", "invite_code"].includes(key.toLowerCase()))) {
+          window.history.replaceState(null, "", window.location.pathname + window.location.hash);
+        }
+      }
       if (window.location.protocol === "file:") {
         window.location.replace("http://127.0.0.1:8765/");
       }
@@ -49,7 +56,7 @@
             <button id="show-login" class="auth-tab is-active" type="button" aria-pressed="true">登录</button>
             <button id="show-register" class="auth-tab" type="button" aria-pressed="false">注册</button>
           </div>
-          <form id="login-form">
+          <form id="login-form" method="post" action="/api/auth/login">
             <label for="login-username">用户名</label>
             <input id="login-username" name="username" autocomplete="username" required maxlength="32">
             <label for="login-password">密码</label>
@@ -59,7 +66,7 @@
               <span>登录影伴</span><span aria-hidden="true">→</span>
             </button>
           </form>
-          <form id="register-form" hidden>
+          <form id="register-form" method="post" action="/api/auth/register" hidden>
             <label for="register-username">用户名</label>
             <input id="register-username" name="username" autocomplete="username" minlength="3" maxlength="32" pattern="[A-Za-z][A-Za-z0-9_]{2,31}" placeholder="例如：movie_fan" aria-describedby="register-username-hint" title="3～32 个字符，以英文字母开头，仅支持英文字母、数字和下划线（_）" required>
             <p id="register-username-hint" class="form-hint">3～32 个字符，以英文字母开头，仅支持英文字母、数字和下划线（_），不区分大小写。</p>

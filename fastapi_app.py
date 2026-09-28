@@ -8,7 +8,7 @@ from typing import Any
 from urllib.parse import unquote
 
 from fastapi import FastAPI, Request
-from fastapi.responses import Response
+from fastapi.responses import RedirectResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from server import AppContext, YingbanHandler
@@ -152,6 +152,14 @@ def create_fastapi_app(context: AppContext) -> FastAPI:
     async def dispatch(request: Request, full_path: str) -> Response:
         del full_path
         if request.method == "GET":
+            if request.url.path in {"/", "/index.html"} and any(
+                key.lower() in {"username", "password", "confirm_password", "invite_code"}
+                for key in request.query_params.keys()
+            ):
+                return RedirectResponse(
+                    request.url.path, status_code=303,
+                    headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+                )
             exported = _exported_frontend_file(context, request.url.path)
             if exported is not None:
                 return await run_in_threadpool(_file_response, exported)
