@@ -39,7 +39,7 @@ for (const page of pages) {
   if (page.bodyClass && !output.includes(`<body class="${page.bodyClass}">`)) {
     throw new Error(`${page.output}: body class changed`);
   }
-  for (const asset of [...page.assets, "/brand.js?v=1"]) {
+  for (const asset of [...page.assets, "/brand.js?v=2"]) {
     if (!output.includes(asset.replaceAll("&", "&amp;"))) {
       throw new Error(`${page.output}: missing versioned asset ${asset}`);
     }
