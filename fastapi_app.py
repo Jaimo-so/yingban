@@ -92,6 +92,9 @@ def _exported_frontend_file(app: AppContext, path: str) -> Path | None:
         "/share": "share.html",
         "/share/": "share.html",
         "/share.html": "share.html",
+        "/landing": "landing.html",
+        "/landing/": "landing.html",
+        "/landing.html": "landing.html",
     }
     if path in page_names:
         direct = _safe_file(root, page_names[path])
@@ -99,7 +102,7 @@ def _exported_frontend_file(app: AppContext, path: str) -> Path | None:
             return direct
         nested = page_names[path].removesuffix(".html") + "/index.html"
         return _safe_file(root, nested)
-    if path.startswith("/_next/"):
+    if path.startswith("/_next/") or path.startswith("/landing-assets/"):
         return _safe_file(root, path.lstrip("/"))
     return None
 

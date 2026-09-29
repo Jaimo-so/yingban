@@ -57,4 +57,22 @@ if (!share.includes('content="no-referrer"')) {
   throw new Error("share.html: referrer policy changed");
 }
 
-console.log("Framework export preserves all three legacy page bodies and public asset contracts.");
+const landing = readFileSync(resolve("out", "landing.html"), "utf8");
+for (const text of ["下一部电影，", "电影很多", "没想好怎么说。", "留下观后感笔记", "我的电影"]) {
+  if (!landing.includes(text)) {
+    throw new Error(`landing.html: missing product section ${text}`);
+  }
+}
+if (landing.includes("一段会继续的关系。") || landing.includes("github.com/")) {
+  throw new Error("landing.html: removed content must not be visible");
+}
+if (!landing.includes('href="/"')) {
+  throw new Error("landing.html: missing product login entry");
+}
+for (const asset of ["hero-screen.jpg", "story-discover.jpg", "story-discuss.jpg", "story-remember.jpg", "yingban-home.jpg", "yingban-recommend.jpg", "yingban-chat.jpg", "yingban-my-movies.jpg"]) {
+  if (!existsSync(resolve("out", "landing-assets", asset))) {
+    throw new Error(`landing.html: missing local image ${asset}`);
+  }
+}
+
+console.log("Framework export preserves three legacy pages and includes the Yingban landing page.");

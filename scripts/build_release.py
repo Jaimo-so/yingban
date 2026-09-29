@@ -8,7 +8,7 @@ def build(root: Path, output: Path) -> None:
     files = list(root.glob("*.py")) + [root / "requirements.txt", root / "data/movies.json"]
     for folder in ("web", "frontend/out"):
         files.extend(p for p in (root / folder).rglob("*") if p.is_file())
-    for page in ("index.html", "admin.html", "share.html"):
+    for page in ("index.html", "admin.html", "share.html", "landing.html"):
         if not (root / "frontend/out" / page).is_file():
             raise ValueError("Run frontend build and verify:parity before packaging")
     with tarfile.open(output, "w:gz") as archive:
