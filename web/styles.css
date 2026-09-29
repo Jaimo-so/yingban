@@ -73,6 +73,7 @@ yingban-icon {
   height: var(--yingban-icon-size, 40px);
   flex: 0 0 auto;
   vertical-align: middle;
+  background: url("/brand/yingban-seal-clean.svg?v=2") center / contain no-repeat;
 }
 
 .brand-mark { --yingban-icon-size: 40px; }

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const pages = [
@@ -6,19 +6,19 @@ const pages = [
     source: "index.html",
     output: "index.html",
     bodyClass: null,
-    assets: ["/styles.css?v=31", "/ui-content.js?v=1", "/movie-components.js?v=2", "/app.js?v=44"],
+    assets: ["/styles.css?v=32", "/ui-content.js?v=1", "/movie-components.js?v=2", "/app.js?v=44"],
   },
   {
     source: "admin.html",
     output: "admin.html",
     bodyClass: "admin-body",
-    assets: ["/styles.css?v=31", "/admin.css?v=20", "/admin.js?v=26"],
+    assets: ["/styles.css?v=32", "/admin.css?v=20", "/admin.js?v=26"],
   },
   {
     source: "share.html",
     output: "share.html",
     bodyClass: "share-page",
-    assets: ["/styles.css?v=31", "/share-card.js?v=14", "/share.js?v=12"],
+    assets: ["/styles.css?v=32", "/share-card.js?v=14", "/share.js?v=12"],
   },
 ];
 
@@ -47,6 +47,9 @@ for (const page of pages) {
 }
 
 const share = readFileSync(resolve("out", "share.html"), "utf8");
+if (!existsSync(resolve("..", "web", "brand", "yingban-seal-clean.svg"))) {
+  throw new Error("Shared clean Yingban logo is missing");
+}
 if (!share.includes('content="noindex,nofollow,noarchive"')) {
   throw new Error("share.html: robots policy changed");
 }

@@ -7,6 +7,7 @@ export const metadata: Metadata = {
   title: "影伴 · 一张电影分享",
   robots: "noindex,nofollow,noarchive",
   referrer: "no-referrer",
+  icons: { icon: "/brand/yingban-seal-clean.svg?v=2" },
 };
 
 export default function ShareLayout({ children }: { children: ReactNode }) {
@@ -14,7 +15,7 @@ export default function ShareLayout({ children }: { children: ReactNode }) {
     <html lang="zh-CN">
       <head>
         <BrandAssets />
-        <link rel="stylesheet" href="/styles.css?v=31" />
+        <link rel="stylesheet" href="/styles.css?v=32" />
       </head>
       <body className="share-page">{children}</body>
     </html>
