@@ -2529,7 +2529,7 @@ class ProductSkillTests(ProductFixture):
         )
         self.assertIn(".weekly-movie > div:not(.poster)", styles)
         self.assertNotIn(".weekly-movie > div {", styles)
-        self.assertIn('/styles.css?v=31', html)
+        self.assertIn('/styles.css?v=32', html)
         self.assertIn('/app.js?v=44', html)
 
 
