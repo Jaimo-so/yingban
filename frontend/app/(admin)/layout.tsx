@@ -14,7 +14,7 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
     <html lang="zh-CN">
       <head>
         <BrandAssets />
-        <link rel="stylesheet" href="/styles.css?v=32" />
+        <link rel="stylesheet" href="/styles.css?v=34" />
         <link rel="stylesheet" href="/admin.css?v=20" />
       </head>
       <body className="admin-body">{children}</body>

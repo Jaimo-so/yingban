@@ -316,6 +316,8 @@ function navigate(view, options = {}) {
   }
   syncLocation(view === "chat" ? state.mode : view, options.replace);
   $$(".view").forEach((node) => { node.hidden = node.id !== `${view}-view`; });
+  document.body.classList.toggle("chat-active", view === "chat");
+  closeChatContext(false);
   $$("[data-nav]").forEach((node) => node.classList.toggle("is-active", node.dataset.nav === view));
   if (view === "history") {
     state.historyCursor = 0;
@@ -554,9 +556,11 @@ function renderSkillToolbar() {
   const toolbar = $("#skill-toolbar");
   if (!toolbar) return;
   const discussion = state.mode === "discussion";
+  $("#chat-mode-picker").hidden = !discussion;
   toolbar.hidden = !discussion;
   if (!discussion) return;
   const active = enabledSkill(state.activeSkillKey);
+  $("#composer-mode-name").textContent = active?.name || "闲聊模式";
   $("#discussion-skill-actions").hidden = !discussion;
   $("#casual-chat-mode").setAttribute("aria-pressed", String(discussion && !active));
   $("#view-skill-records").hidden = !(
@@ -585,6 +589,7 @@ function activateSkill(skillKey) {
   state.activeSkillKey = skill.key;
   localConversationStore.writeCurrent($("#chat-input")?.value || "");
   renderSkillToolbar();
+  $("#chat-mode-picker").open = false;
   if (skill.key === "structured_review_creation") {
     renderChips(["把刚才这些感受整理成小红书观后内容", "整理成一篇个人正式影评", "按影视宣推内容继续整理"]);
     $("#chat-input").placeholder = "继续补充零散感受，或说明平台、受众和篇幅……";
@@ -642,7 +647,11 @@ async function openChat(mode, movie = null, options = {}) {
   $("#chat-kicker").textContent = discussion ? "聊聊电影" : "下一部电影";
   $("#chat-title").textContent = discussion ? (state.selectedMovie ? `聊聊《${state.selectedMovie.title_zh}》` : "想聊哪一部？") : "此刻想看点什么？";
   $("#chat-input").placeholder = discussion ? "片名，或者你想聊的第一句话……" : "说说此刻的心情、口味或最近的烦恼……";
-  renderChips(discussion
+  renderChips(state.chatHistory.length && !state.activeSkillKey
+    ? (discussion
+      ? ["想继续聊聊人物的选择", "聊聊最打动我的那个瞬间", "我有另一种理解"]
+      : ["想换个更轻松的方向", "再缩小一点范围", "说说推荐的理由"])
+    : discussion
     ? ["我很喜欢，但说不上为什么", "有个地方我一直没看懂", "结局让我有点难受"]
     : ["最近压力很大，想放松", "想看一部能给我力量的", "不要爱情片，想看点烧脑的"]
   );
@@ -671,6 +680,7 @@ async function openChat(mode, movie = null, options = {}) {
   }
   localConversationStore.writeCurrent($("#chat-input").value, true);
   autoResize($("#chat-input"));
+  renderChatPresentation(opening);
   $("#chat-input").focus({ preventScroll: true });
   scrollChatToLatest({ behavior: "auto", force: true });
   return true;
@@ -778,11 +788,89 @@ function renderChips(items) {
     });
     return button;
   }));
+  $("#chat-starters").replaceChildren(...items.map((text) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "chat-starter";
+    const label = document.createElement("span");
+    label.textContent = text;
+    const arrow = document.createElement("span");
+    arrow.textContent = "→";
+    arrow.setAttribute("aria-hidden", "true");
+    button.append(label, arrow);
+    button.addEventListener("click", () => {
+      $("#chat-input").value = text;
+      autoResize($("#chat-input"));
+      $("#chat-input").focus({ preventScroll: true });
+    });
+    return button;
+  }));
+}
+
+// Presentation derives from the existing conversation and movie state only.
+// It never creates movie evidence, writes memory, or changes chat payloads.
+function renderChatPresentation(opening = null) {
+  const discussion = state.mode === "discussion";
+  const movie = state.selectedMovie;
+  const empty = state.chatHistory.length === 0;
+  $("#chat-view").classList.toggle("is-welcome", empty);
+  $("#chat-welcome").hidden = !empty;
+  $("#chat-messages").hidden = empty;
+  $("#prompt-chips").hidden = empty;
+  $(".chat-identity h1").textContent = discussion ? "和阿映聊电影" : "和阿映选电影";
+  $("#chat-welcome-kicker").textContent = discussion ? "散场之后" : "下一部电影";
+  const title = $("#chat-welcome-title");
+  title.replaceChildren(document.createTextNode(discussion ? (movie ? `《${movie.title_zh}》` : "电影结束了，") : "今晚想看的，"), document.createElement("br"));
+  const emphasis = document.createElement("em");
+  emphasis.textContent = discussion ? (movie ? "哪些瞬间还留在心里？" : "有些话还没说完。") : "不必一个人找。";
+  title.append(emphasis);
+  if (opening !== null) $("#chat-welcome-description").textContent = opening;
+  $("#chat-movie-context").hidden = !movie;
+  $("#chat-context-empty").hidden = Boolean(movie);
+  $("#chat-artifact-label").hidden = !(discussion && movie);
+  if (movie) {
+    const identity = JSON.stringify([movie.id || movie.movie_id, movie.title_zh, movie.poster_url]);
+    const context = $("#chat-movie-context");
+    if (context.dataset.movieIdentity !== identity) {
+      $("#chat-film-poster").replaceChildren(posterNode(movie));
+      context.dataset.movieIdentity = identity;
+    }
+    $("#chat-film-title").textContent = movie.title_zh;
+    $("#chat-film-meta").textContent = [movie.year, ...(movie.genres || [])].filter(Boolean).join(" · ");
+  }
+}
+
+function closeChatContext(restoreFocus = true) {
+  const panel = $("#chat-context");
+  const wasOpen = panel.classList.contains("is-open");
+  panel.classList.remove("is-open");
+  panel.removeAttribute("role");
+  panel.removeAttribute("aria-modal");
+  $("#chat-context-scrim").hidden = true;
+  $("#chat-settings-button").setAttribute("aria-expanded", "false");
+  $(".chat-main").inert = false;
+  $(".topbar").inert = false;
+  if (wasOpen && restoreFocus) $("#chat-settings-button").focus({ preventScroll: true });
+}
+
+function openChatContext() {
+  $("#chat-mode-picker").open = false;
+  const panel = $("#chat-context");
+  panel.classList.add("is-open");
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-modal", "true");
+  $("#chat-context-scrim").hidden = false;
+  $("#chat-settings-button").setAttribute("aria-expanded", "true");
+  $(".chat-main").inert = true;
+  $(".topbar").inert = true;
+  $("#chat-settings-close").focus({ preventScroll: true });
 }
 
 function isChatNearBottom() {
   const chatView = $("#chat-view");
   if (!chatView || chatView.hidden) return false;
+  const messages = $("#chat-messages");
+  if (messages.clientHeight) return messages.scrollHeight - messages.scrollTop - messages.clientHeight <= 96;
   const composerHeight = chatView.querySelector(".composer-wrap")?.offsetHeight || 0;
   const distance = document.documentElement.scrollHeight - (window.scrollY + window.innerHeight);
   return distance <= composerHeight + 96;
@@ -797,6 +885,12 @@ function scrollChatToLatest({ behavior = "smooth", force = false } = {}) {
   state.chatScrollFrame = requestAnimationFrame(() => {
     state.chatScrollFrame = requestAnimationFrame(() => {
       const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+      const messages = $("#chat-messages");
+      if (messages.clientHeight) {
+        messages.scrollTo({ top: messages.scrollHeight, behavior: reducedMotion ? "auto" : behavior });
+        state.chatScrollFrame = null;
+        return;
+      }
       window.scrollTo({
         top: document.documentElement.scrollHeight,
         behavior: reducedMotion ? "auto" : behavior,
@@ -835,6 +929,23 @@ function renderMessage(role, text, loading = false, options = {}) {
       bubble.append(name);
     }
     bubble.append(document.createTextNode(text));
+    if (role === "assistant") {
+      const tools = document.createElement("div");
+      tools.className = "chat-message-tools";
+      const copy = document.createElement("button");
+      copy.type = "button";
+      copy.className = "chat-copy-button";
+      copy.textContent = "复制回复";
+      copy.setAttribute("aria-label", "复制阿映的这条回复");
+      copy.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(text);
+          showToast("已复制阿映的回复");
+        } catch { showToast("浏览器未允许复制，可以选中正文复制"); }
+      });
+      tools.append(copy);
+      bubble.append(tools);
+    }
     if (options.voiceDuration) {
       const voiceMeta = document.createElement("span");
       voiceMeta.className = "voice-message-meta";
@@ -844,6 +955,7 @@ function renderMessage(role, text, loading = false, options = {}) {
   }
   message.append(bubble);
   $("#chat-messages").append(message);
+  renderChatPresentation();
   scrollChatToLatest({ behavior: options.scrollBehavior || "smooth" });
   return message;
 }
@@ -1148,6 +1260,9 @@ async function sendMessage(forcedText = null, options = {}) {
       renderSkillArtifactActions(assistantMessage, data);
     }
     localConversationStore.writeCurrent(input.value);
+    if (!state.activeSkillKey) renderChips(state.mode === "discussion"
+      ? ["想继续聊聊人物的选择", "聊聊最打动我的那个瞬间", "我有另一种理解"]
+      : ["想换个更轻松的方向", "再缩小一点范围", "说说推荐的理由"]);
     try {
       await syncConversationRecord();
     } catch {
@@ -2020,12 +2135,15 @@ $$('[data-activate-skill]').forEach((button) => {
   button.addEventListener("click", () => activateSkill(button.dataset.activateSkill));
 });
 $("#casual-chat-mode").addEventListener("click", () => {
+  $("#chat-mode-picker").open = false;
   state.activeSkillKey = null;
   state.lastSkillUserText = "";
   state.lastSkillAssistantText = "";
   localConversationStore.writeCurrent($("#chat-input")?.value || "");
   renderSkillToolbar();
-  renderChips(["我很喜欢，但说不上为什么", "有个地方我一直没看懂", "结局让我有点难受"]);
+  renderChips(state.chatHistory.length
+    ? ["想继续聊聊人物的选择", "聊聊最打动我的那个瞬间", "我有另一种理解"]
+    : ["我很喜欢，但说不上为什么", "有个地方我一直没看懂", "结局让我有点难受"]);
   $("#chat-input").placeholder = "片名，或者你想聊的第一句话……";
   showToast("已切换到闲聊模式");
 });
@@ -2078,6 +2196,7 @@ $("#taste-discuss").addEventListener("click", async () => {
   if (movie) openChat("discussion", movie);
 });
 $("#reflection-generate-button").addEventListener("click", async () => {
+  closeChatContext(false);
   try { await generateReflection(state.selectedMovie); } catch (error) { showToast(error.message); }
 });
 $("#reflection-save").addEventListener("click", async () => {
@@ -2154,6 +2273,17 @@ $("#hold-to-talk").addEventListener("keyup", (event) => {
 });
 document.addEventListener("keydown", (event) => {
   pauseChatAutoFollow(event);
+  const panel = $("#chat-context");
+  if (panel.classList.contains("is-open")) {
+    if (event.key === "Escape") closeChatContext();
+    if (event.key === "Tab") {
+      const controls = [...panel.querySelectorAll("button:not([disabled]), input, [tabindex='0']")].filter((node) => !node.closest("[hidden]") && node.getClientRects().length);
+      const first = controls[0];
+      const last = controls.at(-1);
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    }
+  }
   if (event.key === "Escape" && state.recorder) stopRecording(true);
 });
 window.addEventListener("wheel", pauseChatAutoFollow, { passive: true });
@@ -2164,12 +2294,34 @@ window.addEventListener("scroll", () => {
     if (isChatNearBottom()) state.chatAutoFollow = true;
   }, 120);
 }, { passive: true });
+$("#chat-messages").addEventListener("scroll", () => {
+  clearTimeout(state.chatScrollSettleTimer);
+  state.chatScrollSettleTimer = setTimeout(() => {
+    if (isChatNearBottom()) state.chatAutoFollow = true;
+  }, 120);
+}, { passive: true });
+window.addEventListener("resize", () => {
+  if (state.chatAutoFollow) scrollChatToLatest({ behavior: "auto" });
+}, { passive: true });
+$("#chat-settings-button").addEventListener("click", openChatContext);
+$("#chat-settings-close").addEventListener("click", () => closeChatContext());
+$("#chat-context-scrim").addEventListener("click", () => closeChatContext());
+window.matchMedia("(min-width: 1001px)").addEventListener("change", (event) => {
+  if (event.matches) closeChatContext(false);
+});
+$("#chat-context").addEventListener("click", (event) => {
+  if (event.target.closest("#conversation-summary-button")) closeChatContext(false);
+});
+$("#chat-storage-button").addEventListener("click", () => $("#chat-storage-dialog").showModal());
+document.addEventListener("click", (event) => {
+  if (!event.target.closest("#chat-mode-picker")) $("#chat-mode-picker").open = false;
+});
 $("#chat-input").addEventListener("input", (event) => {
   autoResize(event.target);
   localConversationStore.writeCurrent(event.target.value);
 });
 $("#chat-input").addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !event.shiftKey) {
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing && !window.matchMedia("(max-width: 680px)").matches) {
     event.preventDefault();
     $("#chat-form").requestSubmit();
   }

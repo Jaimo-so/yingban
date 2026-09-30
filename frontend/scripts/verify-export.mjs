@@ -6,19 +6,19 @@ const pages = [
     source: "index.html",
     output: "index.html",
     bodyClass: null,
-    assets: ["/styles.css?v=32", "/ui-content.js?v=1", "/movie-components.js?v=2", "/app.js?v=44"],
+    assets: ["/styles.css?v=34", "/ui-content.js?v=1", "/movie-components.js?v=2", "/app.js?v=49"],
   },
   {
     source: "admin.html",
     output: "admin.html",
     bodyClass: "admin-body",
-    assets: ["/styles.css?v=32", "/admin.css?v=20", "/admin.js?v=26"],
+    assets: ["/styles.css?v=34", "/admin.css?v=20", "/admin.js?v=26"],
   },
   {
     source: "share.html",
     output: "share.html",
     bodyClass: "share-page",
-    assets: ["/styles.css?v=32", "/share-card.js?v=14", "/share.js?v=12"],
+    assets: ["/styles.css?v=34", "/share-card.js?v=14", "/share.js?v=12"],
   },
 ];
 
@@ -47,9 +47,6 @@ for (const page of pages) {
 }
 
 const share = readFileSync(resolve("out", "share.html"), "utf8");
-if (!existsSync(resolve("..", "web", "brand", "yingban-seal-clean.svg"))) {
-  throw new Error("Shared clean Yingban logo is missing");
-}
 if (!share.includes('content="noindex,nofollow,noarchive"')) {
   throw new Error("share.html: robots policy changed");
 }
@@ -63,8 +60,11 @@ for (const text of ["下一部电影，", "电影很多", "没想好怎么说。
     throw new Error(`landing.html: missing product section ${text}`);
   }
 }
-if (landing.includes("一段会继续的关系。") || landing.includes("github.com/")) {
-  throw new Error("landing.html: removed content must not be visible");
+if (landing.includes("一段会继续的关系。")) {
+  throw new Error("landing.html: removed story section is still present");
+}
+if (landing.includes("github.com/")) {
+  throw new Error("landing.html: GitHub link must not be visible");
 }
 if (!landing.includes('href="/"')) {
   throw new Error("landing.html: missing product login entry");
@@ -73,6 +73,9 @@ for (const asset of ["hero-screen.jpg", "story-discover.jpg", "story-discuss.jpg
   if (!existsSync(resolve("out", "landing-assets", asset))) {
     throw new Error(`landing.html: missing local image ${asset}`);
   }
+}
+if (!existsSync(resolve("out", "brand", "yingban-seal-clean.svg"))) {
+  throw new Error("landing.html: missing clean shared brand icon");
 }
 
 console.log("Framework export preserves three legacy pages and includes the Yingban landing page.");

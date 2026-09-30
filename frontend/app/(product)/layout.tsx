@@ -24,7 +24,7 @@ export default function ProductLayout({ children }: { children: ReactNode }) {
               'if(window.location.search){const params=new URLSearchParams(window.location.search);if([...params.keys()].some(key=>["username","password","confirm_password","invite_code"].includes(key.toLowerCase()))){window.history.replaceState(null,"",window.location.pathname+window.location.hash)}}if(window.location.protocol==="file:"){window.location.replace("http://127.0.0.1:8765/")}',
           }}
         />
-        <link rel="stylesheet" href="/styles.css?v=32" />
+        <link rel="stylesheet" href="/styles.css?v=34" />
       </head>
       <body>{children}</body>
     </html>

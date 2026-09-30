@@ -19,7 +19,7 @@
     </script>
     <script src="/brand.js?v=2" defer></script>
     <link rel="icon" type="image/svg+xml" href="/brand/yingban-seal-clean.svg?v=2">
-    <link rel="stylesheet" href="/styles.css?v=32">
+    <link rel="stylesheet" href="/styles.css?v=34">
   </head>
   <body>
     <div class="film-grain" aria-hidden="true"></div>
@@ -195,36 +195,36 @@
         </section>
 
         <section id="chat-view" class="view chat-view" hidden>
-          <div class="chat-header">
-            <button id="chat-back" class="text-button" type="button">← 返回</button>
-            <div>
-              <span id="chat-kicker" class="eyebrow">聊聊电影</span>
-              <h1 id="chat-title">想聊哪一部？</h1>
-            </div>
-            <div class="chat-preferences">
-              <button id="chat-draft-clear" class="voice-autoplay-toggle" type="button">新对话</button>
-              <button id="chat-history-button" class="voice-autoplay-toggle" type="button" aria-label="打开历史对话" hidden>
-                <svg class="history-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2M6.4 5.9 4.8 4.3M17.6 5.9l1.6-1.6"/></svg>
-                <span>历史对话</span>
-              </button>
-              <button id="conversation-summary-button" class="voice-autoplay-toggle" type="button" hidden>下次继续聊</button>
-              <button id="reflection-generate-button" class="voice-autoplay-toggle" type="button" hidden>整理这次观后感</button>
-              <label id="spoiler-control" class="spoiler-control">
-                <input id="spoilers-allowed" type="checkbox" checked>
-                <span>可以聊剧透</span>
-              </label>
-              <button id="voice-autoplay-toggle" class="voice-autoplay-toggle" type="button" aria-pressed="true" aria-label="关闭 AI 语音自动播放">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 10v4h3l4 4V6l-4 4H5zM16 9a5 5 0 010 6M18.5 6.5a9 9 0 010 11"/></svg>
-                <span>自动播放</span>
-              </button>
-            </div>
-          </div>
-
-          <div id="chat-draft-notice" class="chat-draft-notice" hidden>
-            <span id="chat-draft-message">本机历史最多保留 7 天；新的成功聊天会保存在服务端供管理员查看。</span>
-          </div>
-
-          <section id="skill-toolbar" class="skill-toolbar" aria-label="聊天模式" hidden>
+          <div class="chat-main">
+            <header class="chat-header">
+              <button id="chat-back" class="chat-icon-button" type="button" aria-label="返回此刻" title="返回此刻">←</button>
+              <div class="chat-identity"><yingban-icon class="chat-companion" aria-hidden="true"></yingban-icon><div><h1>和阿映聊电影</h1><p><span id="chat-kicker">聊聊电影</span><span class="chat-title-divider"> · </span><span id="chat-title">想聊哪一部？</span></p></div></div>
+              <div class="chat-header-actions">
+                <button id="chat-draft-clear" class="chat-new-button" type="button" aria-label="新对话" title="新对话"><span aria-hidden="true">＋</span><span>新对话</span></button>
+                <button id="chat-history-button" class="chat-icon-button" type="button" aria-label="打开历史对话" title="历史对话" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 1 7M4 4v6h6M12 7v5l3 2"/></svg></button>
+                <button id="chat-settings-button" class="chat-icon-button" type="button" aria-label="对话设置" title="对话设置" aria-expanded="false" aria-controls="chat-context"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h7m4 0h5M4 17h3m4 0h9"/><circle cx="13" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg></button>
+              </div>
+            </header>
+            <div id="chat-draft-notice" class="chat-draft-notice" hidden><span id="chat-draft-message">本机历史最多保留 7 天；新的成功聊天会保存在服务端供管理员查看。</span></div>
+            <div id="chat-messages" class="chat-messages" aria-live="polite"></div>
+            <section id="chat-welcome" class="chat-welcome" aria-labelledby="chat-welcome-title" hidden>
+              <p class="eyebrow" id="chat-welcome-kicker">散场之后</p>
+              <h2 id="chat-welcome-title">电影结束了，<br><em>有些话还没说完。</em></h2>
+              <p id="chat-welcome-description">我是阿映。从一部电影，或此刻的心情说起就好。</p>
+              <div id="chat-starters" class="chat-starters" aria-label="快捷开场"></div>
+            </section>
+            <div class="composer-wrap">
+              <div id="prompt-chips" class="prompt-chips" aria-label="继续聊"></div>
+              <div class="composer-shell">
+                <form id="chat-form" class="composer">
+                  <span id="voice-availability-status" class="sr-only" role="status" aria-live="polite"></span>
+                  <div id="text-composer" class="text-composer"><label class="sr-only" for="chat-input">给阿映发消息</label><textarea id="chat-input" rows="1" maxlength="6000" placeholder="从片名或此刻的心情说起……" required></textarea></div>
+                  <div id="voice-composer" class="voice-composer" hidden><button id="hold-to-talk" class="hold-to-talk" type="button" aria-describedby="voice-recording-status">按住说话</button><span id="voice-recording-status" class="voice-recording-status" role="status" aria-live="polite">松开发送，Esc 取消</span></div>
+                  <div class="composer-footer">
+                    <div class="composer-options">
+                      <button id="voice-mode-button" class="composer-mode-button" type="button" aria-label="切换到语音输入" aria-pressed="false" aria-controls="text-composer voice-composer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 00-3 3v6a3 3 0 006 0V6a3 3 0 00-3-3zM6 11v1a6 6 0 0012 0v-1M12 18v3M9 21h6"/></svg></button>
+                      <details id="chat-mode-picker" class="chat-mode-picker"><summary><span id="composer-mode-name">闲聊模式</span><span aria-hidden="true">⌄</span></summary>
+                        <section id="skill-toolbar" class="skill-toolbar" aria-label="聊天模式" hidden>
             <div>
               <span class="eyebrow">聊天模式</span>
               <strong id="active-skill-name">闲聊模式</strong>
@@ -237,30 +237,27 @@
               <button id="view-skill-records" class="mini-button" type="button" hidden>查看已存记录</button>
             </div>
           </section>
-
-          <div id="chat-messages" class="chat-messages" aria-live="polite"></div>
-
-          <div class="composer-wrap">
-            <div id="prompt-chips" class="prompt-chips" aria-label="快捷开场"></div>
-            <form id="chat-form" class="composer">
-              <button id="voice-mode-button" class="composer-mode-button" type="button" aria-label="切换到语音输入" aria-pressed="false" aria-controls="text-composer voice-composer">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 00-3 3v6a3 3 0 006 0V6a3 3 0 00-3-3zM6 11v1a6 6 0 0012 0v-1M12 18v3M9 21h6"/></svg>
-              </button>
-              <span id="voice-availability-status" class="sr-only" role="status" aria-live="polite"></span>
-              <div id="text-composer" class="text-composer">
-                <label class="sr-only" for="chat-input">给阿映发消息</label>
-                <textarea id="chat-input" rows="1" maxlength="6000" placeholder="从片名或此刻的心情说起……" required></textarea>
+                      </details>
+                    </div>
+                    <div class="composer-send"><span class="composer-keyboard">Enter 发送 · Shift + Enter 换行</span><button id="send-button" class="send-button" type="submit" aria-label="发送消息"><span>发送</span><span class="send-arrow"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></button></div>
+                  </div>
+                </form>
               </div>
-              <div id="voice-composer" class="voice-composer" hidden>
-                <button id="hold-to-talk" class="hold-to-talk" type="button" aria-describedby="voice-recording-status">按住说话</button>
-                <span id="voice-recording-status" class="voice-recording-status" role="status" aria-live="polite">松开发送，Esc 取消</span>
-              </div>
-              <button id="send-button" class="send-button" type="submit" aria-label="发送消息">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
-              </button>
-            </form>
-            <p class="composer-note">阿映是 AI 电影伙伴；它不会把你的现实烦恼自动存进长期记忆。</p>
+              <p class="composer-note">阿映是 AI 电影伙伴；它不会把你的现实烦恼自动存进长期记忆。 <button id="chat-storage-button" class="text-button" type="button">对话保存说明</button></p>
+            </div>
           </div>
+          <button id="chat-context-scrim" class="chat-context-scrim" type="button" aria-label="关闭对话设置" hidden></button>
+          <aside id="chat-context" class="chat-context" aria-label="电影与对话设置" tabindex="-1">
+            <div class="chat-context-header"><span class="eyebrow">对话设置</span><button id="chat-settings-close" class="chat-icon-button" type="button" aria-label="关闭对话设置">×</button></div>
+            <div id="chat-movie-context" class="chat-movie-context" hidden><p class="chat-context-label">这次，我们在聊</p><div class="chat-film-shell"><div id="chat-film-poster"></div><div class="chat-film-info"><h2 id="chat-film-title"></h2><p id="chat-film-meta"></p></div></div></div>
+            <div id="chat-context-empty" class="chat-context-empty"><p class="chat-context-label">你的电影伙伴</p><h2>不必有标准答案，<br>感受就值得聊。</h2><p>告诉阿映片名，或说说此刻的心情。确认电影后，这里会显示本次讨论的电影。</p></div>
+            <div class="chat-preferences">
+              <label id="spoiler-control" class="spoiler-control"><span><strong>可以聊剧透</strong><small>结局与关键情节也可以展开</small></span><input id="spoilers-allowed" type="checkbox" checked></label>
+              <button id="voice-autoplay-toggle" class="voice-autoplay-toggle" type="button" aria-pressed="true" aria-label="关闭 AI 语音自动播放"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 10v4h3l4 4V6l-4 4H5zM16 9a5 5 0 010 6M18.5 6.5a9 9 0 010 11"/></svg><span>自动播放</span></button>
+            </div>
+            <div class="chat-artifact-actions"><p class="chat-context-label" id="chat-artifact-label" hidden>把这次聊天留下</p><button id="reflection-generate-button" class="chat-artifact-button" type="button" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v16H5zM8 8h8M8 12h8M8 16h5"/></svg><span>整理这次观后感<small>生成草稿，由你编辑确认</small></span></button><button id="conversation-summary-button" class="chat-artifact-button" type="button" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v18l-6-4-6 4z"/></svg><span>下次继续聊<small>留下还想接着聊的问题</small></span></button></div>
+            <p class="chat-context-tail">好电影的余韵，<br>可以留得久一点。</p>
+          </aside>
         </section>
 
         <section id="profile-view" class="view profile-view" hidden aria-labelledby="profile-title">
@@ -488,6 +485,11 @@
       </div>
     </dialog>
 
+    <dialog id="chat-storage-dialog" class="utility-dialog" aria-labelledby="chat-storage-title">
+      <form method="dialog" class="dialog-head"><h2 id="chat-storage-title">对话保存说明</h2><button class="icon-button" value="cancel" aria-label="关闭对话保存说明">×</button></form>
+      <div class="utility-dialog-body"><p>本机历史默认 7 天后自动过期。新的成功聊天会保存在服务端，供管理员按账户查看；清空本机副本不会删除服务端记录。</p><p>阿映不会把你的现实烦恼自动存进长期记忆。观后感、续聊摘要与观影认知沿用当前的编辑、确认和删除规则。</p></div>
+    </dialog>
+
     <dialog id="conversation-history-dialog" class="utility-dialog conversation-history-dialog" aria-labelledby="conversation-history-title">
       <form method="dialog" class="dialog-head">
         <div><span class="eyebrow">LOCAL CONVERSATIONS</span><h2 id="conversation-history-title">历史对话</h2></div>
@@ -585,6 +587,6 @@
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <script src="/ui-content.js?v=1" defer></script>
     <script src="/movie-components.js?v=2" defer></script>
-    <script src="/app.js?v=44" defer></script>
+    <script src="/app.js?v=49" defer></script>
   </body>
 </html>
