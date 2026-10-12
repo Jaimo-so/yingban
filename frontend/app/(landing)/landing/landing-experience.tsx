@@ -284,7 +284,7 @@ export default function LandingExperience() {
         <section className={styles.finalCta} aria-labelledby="final-title"><div className={styles.reveal}><span className={styles.kicker}>银幕尚未暗下</span><h2 id="final-title">下一部电影，<br />从这里开始。</h2><p>影伴会记得你与电影的关系，而每一步仍由你决定。</p><Link className={styles.pill} href="/">打开影伴 <Arrow size={17} /></Link></div></section>
       </main>
 
-      <footer className={styles.footer}><div className={styles.footerGrid}><div className={styles.footerBrand}><div><img src="/brand/yingban-seal-clean.svg" width="38" height="38" alt="" /><strong>影伴</strong></div><p>让推荐有来处，让讨论有后续，<br />让记忆始终由你决定。</p></div><div><h3>产品</h3><Link href="/">打开影伴</Link><a href="#features">能做什么</a><a href="#boards">我的电影</a></div><div><h3>了解影伴</h3><a href="#showcase">产品展示</a><a href="#moments">使用场景</a></div></div><div className={styles.footerBottom}><span>© 2026 影伴</span><a href="#top">回到顶部 ↑</a></div></footer>
+      <footer className={styles.footer}><div className={styles.footerGrid}><div className={styles.footerBrand}><div><img src="/brand/yingban-seal-clean.svg" width="38" height="38" alt="" /><strong>影伴</strong></div><p>让推荐有来处，让讨论有后续，<br />让记忆始终由你决定。</p></div><div><h3>产品</h3><Link href="/">打开影伴</Link><a href="#features">能做什么</a><a href="#boards">我的电影</a></div><div><h3>了解影伴</h3><a href="#showcase">产品展示</a><a href="#moments">使用场景</a></div></div><div className={styles.footerBottom}><span>© 2026 影伴</span><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">鲁ICP备2026060298号-1</a><a href="#top">回到顶部 ↑</a></div></footer>
     </div>
   );
 }
