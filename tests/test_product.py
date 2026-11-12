@@ -398,6 +398,25 @@ class InviteAndMemoryTests(ProductFixture):
         self.assertTrue(recommendations)
         self.assertFalse(recommended_ids.intersection({movie["id"] for movie in watched}))
 
+    def test_recommendation_without_moods_uses_fallback_reason(self) -> None:
+        code = self.store.generate_invites(1)[0]
+        account_id, _token = self.store.login_with_invite(code, 30)
+        movie = self.store.all_movies()[0]
+        self.store.upsert_movies([{**movie, "moods": []}])
+
+        recommendations = self.catalog.recommend(
+            account_id, "你好", limit=1, candidate_ids={movie["id"]}
+        )
+
+        self.assertEqual(len(recommendations), 1)
+        self.assertEqual(recommendations[0]["id"], movie["id"])
+        self.assertEqual(recommendations[0]["moods"], [])
+        self.assertEqual(
+            recommendations[0]["match_reason"],
+            "它是片库中较受欢迎、也适合作为下一部选择的影片。",
+        )
+        self.assertTrue(recommendations[0]["impression_id"])
+
     def test_accounts_have_isolated_movie_history(self) -> None:
         first_code, second_code = self.store.generate_invites(2)
         first_account, _ = self.store.login_with_invite(first_code, 30)

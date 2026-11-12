@@ -206,6 +206,6 @@ class MovieCatalog:
         if matched:
             joined = "、".join(matched[:3])
             return f"它和你刚才提到的需要，在{joined}这些方向上比较接近。"
-        if request.strip():
+        if request.strip() and movie["moods"]:
             return f"它在热门片库里辨识度很高，也保留了{movie['moods'][0]}的观看感受。"
         return "它是片库中较受欢迎、也适合作为下一部选择的影片。"
